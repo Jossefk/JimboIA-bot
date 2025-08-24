@@ -1,0 +1,5 @@
+# Ignorar archivos de configuración
+config.json
+
+# Ignorar la carpeta de dependencias de Node.js
+node_modules/
