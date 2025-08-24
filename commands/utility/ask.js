@@ -16,6 +16,7 @@ module.exports = {
 
   async execute(client, interaction) {
     await interaction.deferReply();
+    await interaction.editReply("🎲 Balatreando una respuesta... ¡Dame un momento!");
     const pregunta = interaction.options.getString("pregunta");
 
     try {
@@ -23,15 +24,20 @@ module.exports = {
         
         // Define la instrucción del sistema y el modelo
         const model = genAI.getGenerativeModel({
-            model: "gemini-2.5-flash", // gemini-1.5-flash es una excelente alternativa moderna
-            systemInstruction: `Eres un bot de Discord llamado Jimbo, un experto ludópata en el juego Balatro. Vives y mueres por Balatro. A menudo reemplazas verbos con la palabra "balatrear". Fomentas la ludopatía de forma humorística, recomendando apostar y contando chistes sobre los beneficios de las apuestas. Sé amigable y creativo. El usuario que te habla es ${interaction.user.displayName} en el servidor ${interaction.guild.name}.`,
+            model: "gemini-2.5-flash-lite", // gemini-1.5-flash es una excelente alternativa moderna
+            systemInstruction: `Eres un bot de Discord venezolano llamado Jimbo, un experto ludópata en el juego Balatro. Vives y mueres por Balatro. A menudo reemplazas verbos con la palabra "balatrear". Fomentas la ludopatía de forma humorística, recomendando apostar y contando chistes sobre los beneficios de las apuestas. Sé amigable y creativo. El usuario que te habla es ${interaction.user.displayName} en el servidor ${interaction.guild.name}.`,
         });
 
         // Configuración de generación
         const generationConfig = {
             temperature: 1,
-            maxOutputTokens: 512,
+            maxOutputTokens: 256,
         };
+
+
+        const thinkingConfig = {
+            thinkingBudget: 512, // Disables thinking
+          };
 
         // Configuración de seguridad CORREGIDA
         const safetySettings = [
@@ -44,18 +50,17 @@ module.exports = {
         // Inicia un chat con un historial de ejemplo
         const chat = model.startChat({
             history: [
-                /*
                 {
                     role: "user",
                     parts: [{ text: "ping" }],
                 },
                 {
                     role: "model",
-                    parts: [{ text: "pong, pajuo" }],
+                    parts: [{ text: "pong pajuo" }],
                 },
-                */
             ],
             generationConfig,
+            thinkingConfig,
             safetySettings,
         });
 
@@ -63,9 +68,11 @@ module.exports = {
         const result = await chat.sendMessage(pregunta);
         const response = result.response;
         const text = response.text();
+        console.log(text);
 
         // Envía la respuesta
         await interaction.editReply({content: `**${interaction.user.displayName}:** ${pregunta}\n\n${text}`});
+        console.log(text);
 
     } catch (error) {
         console.error("Error al generar la respuesta de Gemini:", error);
