@@ -52,9 +52,9 @@ client.on(Events.InteractionCreate, async interaction => {
         } catch (error) {
             console.error(error);
             if (interaction.replied || interaction.deferred) {
-                await interaction.followUp({ content: 'Hubo un error balatreando este comando.', ephemeral: true });
+                await interaction.followUp({ content: 'Hubo un error balatreando este comando.', flags: 64 });
             } else {
-                await interaction.reply({ content: 'Hubo un error balatreando este comando.', ephemeral: true });
+                await interaction.reply({ content: 'Hubo un error balatreando este comando.', flags: 64 });
             }
         }
         return; // Detenemos la ejecución si era un comando
@@ -67,7 +67,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
         // Verificamos que el usuario que hace clic es quien inició la partida
         if (interaction.user.id !== userId) {
-            return interaction.reply({ content: "No puedes interactuar en la partida de otra persona.", ephemeral: true });
+            return interaction.reply({ content: "No puedes interactuar en la partida de otra persona.", flags: 64 });
         }
 
         const game = activeGames.get(userId);

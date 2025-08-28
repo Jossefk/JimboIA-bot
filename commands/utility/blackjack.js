@@ -14,7 +14,7 @@ module.exports = {
 
         // Evitar que un usuario tenga múltiples partidas activas
         if (activeGames.has(userId)) {
-            return interaction.reply({ content: 'Ya tienes una partida de Blackjack en curso. ¡Termínala primero!', ephemeral: true });
+            return interaction.reply({ content: 'Ya tienes una partida de Blackjack en curso. ¡Termínala primero!', flags: 64 });
         }
 
         // --- Configuración Inicial del Juego ---

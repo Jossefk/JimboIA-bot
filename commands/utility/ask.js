@@ -31,12 +31,12 @@ module.exports = {
         // Configuración de generación
         const generationConfig = {
             temperature: 1,
-            maxOutputTokens: 256,
+            maxOutputTokens: 512,
         };
 
 
         const thinkingConfig = {
-            thinkingBudget: 512, // Disables thinking
+            thinkingBudget: 1024,
           };
 
         // Configuración de seguridad CORREGIDA
@@ -72,7 +72,6 @@ module.exports = {
 
         // Envía la respuesta
         await interaction.editReply({content: `**${interaction.user.displayName}:** ${pregunta}\n\n${text}`});
-        console.log(text);
 
     } catch (error) {
         console.error("Error al generar la respuesta de Gemini:", error);
