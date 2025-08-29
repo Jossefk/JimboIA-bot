@@ -9,3 +9,6 @@ config.json
 
 # Ignorar el archivo de discloud
 discloud.config
+
+# Ignorar Gemini.md
+gemini.md
