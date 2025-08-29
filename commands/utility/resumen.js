@@ -1,6 +1,6 @@
 const { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, ComponentType } = require('discord.js');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const { geminiAPIKey } = require('../../config.json'); // Navegamos dos carpetas hacia atrás para encontrar config.json
+const geminiAPIKey = process.env.GEMINI_API_KEY;
 
 // Configuración de la API de Gemini
 const genAI = new GoogleGenerativeAI(geminiAPIKey);
@@ -96,16 +96,16 @@ module.exports = {
                     hoursToFetch = 1;
                     break;
             }
-
+            const userDisplayName = interaction.user.displayName;
             // --- Mensaje de espera y llamada a la función principal ---
             await i.update({ content: `Generando resumen de las últimas ${Math.round(hoursToFetch)} horas...`, components: [] });
-            await generateSummary(i, hoursToFetch);
+            await generateSummary(i, hoursToFetch, userDisplayName);
         });
     },
 };
 
 // --- Función Principal para Generar el Resumen ---
-async function generateSummary(interaction, hours) {
+async function generateSummary(interaction, hours, userDisplayName) {
     try {
         const channel = interaction.channel;
         const cutoffDate = new Date().getTime() - (hours * 60 * 60 * 1000);
@@ -141,7 +141,7 @@ Genera el resumen.`;
             .setTitle(`📜 Resumen del Chat - Últimas ${Math.round(hours)} horas`)
             .setDescription(summary)
             .setTimestamp()
-            .setFooter({ text: `Resumen generado por ${interaction.client.user.username}` });
+            .setFooter({ text: `Resumen generado por ${userDisplayName}` });
 
         await interaction.followUp({ embeds: [summaryEmbed] });
 

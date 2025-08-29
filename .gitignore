@@ -2,7 +2,10 @@
 config.json
 
 # Ignorar la carpeta de dependencias de Node.js
-node_modules/
+/node_modules
+
+# Ignorar env
+.env
 
 # Ignorar el archivo de discloud
 discloud.config
