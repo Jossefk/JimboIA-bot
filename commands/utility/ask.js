@@ -1,4 +1,4 @@
-const { SlashCommandBuilder } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { geminiAPIKey } = require('../../config.js');
 
@@ -71,8 +71,21 @@ module.exports = {
 			const text = response.text();
 			console.log(text);
 
-			// Envía la respuesta
-			await interaction.editReply({ content: `**${interaction.user.displayName}:** ${pregunta}\n\n${text}` });
+			// Borra el mensaje de "pensando..." que se mostró al principio.
+			await interaction.deleteReply();
+
+			// Crea el embed con la respuesta, similar al de /resumen.
+			const responseEmbed = new EmbedBuilder()
+				.setColor(0x0099FF)
+				.setAuthor({ name: `Pregunta de ${interaction.user.displayName}`, iconURL: interaction.user.displayAvatarURL() })
+				.setTitle('Jimbo te balatrea una respuesta:')
+				.addFields({ name: 'Tu pregunta fue:', value: pregunta })
+				.setDescription(text)
+				.setTimestamp()
+				.setFooter({ text: '¡A balatrear se ha dicho!' });
+
+			// Envía el embed como un mensaje completamente nuevo en el canal.
+			await interaction.channel.send({ embeds: [responseEmbed] });
 
 		}
 		catch (error) {
