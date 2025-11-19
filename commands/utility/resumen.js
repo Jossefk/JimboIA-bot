@@ -4,7 +4,7 @@ const { geminiAPIKey } = require('../../config.js');
 
 // Configuración de la API de Gemini
 const genAI = new GoogleGenerativeAI(geminiAPIKey);
-const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+const model = genAI.getGenerativeModel({ model: 'gemini-2.5-pro' });
 
 
 module.exports = {

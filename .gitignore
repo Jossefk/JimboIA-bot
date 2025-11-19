@@ -1,4 +1,5 @@
 # Ignorar archivos de configuración
+config.js
 config.json
 
 # Ignorar la carpeta de dependencias de Node.js
@@ -12,3 +13,6 @@ discloud.config
 
 # Ignorar Gemini.md
 gemini.md
+
+# Ignorar example
+gemini_full_example.js

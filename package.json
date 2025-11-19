@@ -1,9 +1,10 @@
 {
   "name": "jimboai-bot",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
+    "deploy": "node deploy-commands.js",
     "lint": "eslint .",
     "test": "mocha tests/**/*.test.js"
   },

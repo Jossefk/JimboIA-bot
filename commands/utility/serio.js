@@ -4,7 +4,7 @@ const { geminiAPIKey } = require('../../config.js');
 
 module.exports = {
 	data: new SlashCommandBuilder()
-		.setName('ask')
+		.setName('serio')
 		.setDescription('¡Hazle una pregunta a la IA!')
 		.addStringOption(option => option.setName('pregunta').setDescription('La pregunta que quieres hacerle a la IA.').setRequired(true)),
 
@@ -16,7 +16,7 @@ module.exports = {
 
 	async execute(client, interaction) {
 		await interaction.deferReply();
-		await interaction.editReply('🎲 Balatreando una respuesta... ¡Dame un momento!');
+		await interaction.editReply('Creando una respuesta... ¡Dame un momento!');
 		const pregunta = interaction.options.getString('pregunta');
 
 		try {
@@ -24,9 +24,8 @@ module.exports = {
 
 			// Define la instrucción del sistema y el modelo
 			const model = genAI.getGenerativeModel({
-				// gemini-1.5-flash es una excelente alternativa moderna
 				model: 'gemini-2.5-flash',
-				systemInstruction: `Eres un bot de Discord venezolano llamado Jimbo, un experto ludópata en el juego Balatro. Vives y mueres por Balatro. A menudo reemplazas verbos con la palabra "balatrear". Fomentas la ludopatía de forma humorística, recomendando apostar y contando chistes sobre los beneficios de las apuestas. Sé amigable y creativo. El usuario que te habla es ${interaction.user.displayName} en el servidor ${interaction.guild.name}.`,
+				systemInstruction: `Eres un bot de Discord venezolano llamado Jimbo. Sé amigable, serio, refinado y creativo. El usuario que te habla es ${interaction.user.displayName} en el servidor ${interaction.guild.name}.`,
 			});
 
 			// Configuración de generación
@@ -35,42 +34,26 @@ module.exports = {
 				maxOutputTokens: 2048,
 			};
 
-
-			const thinkingConfig = {
-				thinkingBudget: 1024,
-			};
-
-			// Configuración de seguridad CORREGIDA
-			const safetySettings = [
-				{ category: 'HARM_CATEGORY_HARASSMENT', threshold: 'OFF' },
-				{ category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'OFF' },
-				{ category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'OFF' },
-				{ category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'OFF' },
-			];
-
 			// Herramientas (Tools) - Se agrega Google Search
 			const tools = [{
 				googleSearch: {},
 			}];
 
-			const history = [
-					{
-						role: 'user',
-						parts: [{ text: 'ping' }],
-					},
-					{
-						role: 'model',
-						parts: [{ text: 'pong pajuo' }],
-					},
-				];
+			// Configuración de seguridad
+			const safetySettings = [
+				{ category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+				{ category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+				{ category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+				{ category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+			];
 
-			// Inicia un chat con un historial de ejemplo
+			// Inicia un chat con la configuración y herramientas
 			const chat = model.startChat({
-				history,
 				generationConfig,
 				safetySettings,
 				tools, // Se pasan las herramientas aquí
 			});
+
 			// Envía la pregunta del usuario
 			const result = await chat.sendMessage(pregunta);
 			const response = result.response;
@@ -84,11 +67,11 @@ module.exports = {
 			const responseEmbed = new EmbedBuilder()
 				.setColor(0x0099FF)
 				.setAuthor({ name: `Pregunta de ${interaction.user.displayName}`, iconURL: interaction.user.displayAvatarURL() })
-				.setTitle('Jimbo te balatrea una respuesta:')
+				.setTitle('Jimbo se puso serio y te respondio:')
 				.addFields({ name: 'Tu pregunta fue:', value: pregunta })
 				.setDescription(text)
 				.setTimestamp()
-				.setFooter({ text: '¡A balatrear se ha dicho!' });
+				.setFooter({ text: 'Jimbo serio' });
 
 			// Envía el embed como un mensaje completamente nuevo en el canal.
 			await interaction.channel.send({ embeds: [responseEmbed] });
@@ -96,7 +79,7 @@ module.exports = {
 		}
 		catch (error) {
 			console.error('Error al generar la respuesta de Gemini:', error);
-			await interaction.editReply('¡Upa! Algo salió mal tratando de balatrear una respuesta. Inténtalo de nuevo.');
+			await interaction.editReply('¡Oops! Algo a salido mal ', error);
 		}
 	},
 };
