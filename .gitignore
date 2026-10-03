@@ -16,3 +16,11 @@ gemini.md
 
 # Ignorar example
 gemini_full_example.js
+
+# Ignorar base de datos local SQLite
+/data
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+/.agents

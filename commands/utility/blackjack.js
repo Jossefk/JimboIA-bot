@@ -1,23 +1,51 @@
-// commands/games/blackjack.js
+// commands/utility/blackjack.js
 
 const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-
-// Importaremos esto más tarde
 const { activeGames } = require('../../gameManager.js');
-// Y esto también
 const { createDeck, shuffleDeck, getHandValue, getHandString } = require('../../utils/blackjackUtils.js');
+const db = require('../../database/db.js');
 
 module.exports = {
 	data: new SlashCommandBuilder()
 		.setName('blackjack')
-		.setDescription('Inicia una partida de Blackjack contra Jimbo.'),
+		.setDescription('Inicia una partida de Blackjack con fichas contra Jimbo.')
+		.addIntegerOption(option =>
+			option
+				.setName('apuesta')
+				.setDescription('Cantidad de fichas a apostar (mínimo 10, por defecto 50).')
+				.setMinValue(10)
+				.setRequired(false),
+		),
 
 	async execute(client, interaction) {
 		const userId = interaction.user.id;
+		const displayName = interaction.member?.displayName || interaction.user.displayName || interaction.user.username;
+
+		// Obtener o registrar usuario en SQLite
+		let user = db.getOrCreateUser(userId, interaction.user.username, displayName);
+
+		// Si el usuario está quebrado (0 fichas), Jimbo le da un rescate
+		if (user.chips < 10) {
+			db.addChips(userId, 100);
+			db.addMemory(userId, interaction.guildId, 'deuda', 'Jimbo le dio un préstamo de cortesía de 100 fichas porque quedó en la ruina', 2);
+			user = db.getOrCreateUser(userId, interaction.user.username, displayName);
+			await interaction.channel.send(`💸 **¡Auxilio de la Casa!** Jimbo vio que <@${userId}> estaba pelando bolas con 0 fichas y le prestó **100 fichas de cortesía** para que siga balatreando.`);
+		}
+
+		// Determinar monto de apuesta
+		const inputBet = interaction.options.getInteger('apuesta') || 50;
+		if (inputBet > user.chips) {
+			return interaction.reply({
+				content: `🃏 ¡Epa loco! Estás apostando **${inputBet} fichas** pero solo tienes **${user.chips} fichas**. Ajusta la apuesta o no hay trato.`,
+				flags: 64,
+			});
+		}
+
+		const bet = inputBet;
 
 		// Evitar que un usuario tenga múltiples partidas activas
 		if (activeGames.has(userId)) {
-			return interaction.reply({ content: 'Ya tienes una partida de Blackjack en curso. ¡Termínala primero!', flags: 64 });
+			return interaction.reply({ content: 'Ya tienes una partida de Blackjack en curso. ¡Termínala primero antes de tirar más cartas!', flags: 64 });
 		}
 
 		// --- Configuración Inicial del Juego ---
@@ -31,6 +59,7 @@ module.exports = {
 			dealerHand,
 			playerValue: getHandValue(playerHand),
 			dealerValue: getHandValue(dealerHand),
+			bet,
 			gameOver: false,
 		};
 
@@ -41,12 +70,13 @@ module.exports = {
 		const createGameEmbed = () => {
 			return new EmbedBuilder()
 				.setColor(0x0099FF)
-				.setTitle('♠️ Partida de Blackjack ♦️')
+				.setTitle('♠️ Partida de Blackjack Balatriana ♦️')
+				.setDescription(`💰 **Apuesta en juego:** ${bet} fichas (Saldo: ${user.chips} fichas)`)
 				.addFields(
-					{ name: 'Mano de Jimbo', value: getHandString(dealerHand, true) },
-					{ name: `Tu Mano (${getHandValue(playerHand)})`, value: getHandString(playerHand) },
+					{ name: '🃏 Mano de Jimbo', value: getHandString(dealerHand, true), inline: true },
+					{ name: `🎴 Tu Mano (${getHandValue(playerHand)})`, value: getHandString(playerHand), inline: true },
 				)
-				.setFooter({ text: `Turno de ${interaction.user.displayName}` });
+				.setFooter({ text: `Turno de ${displayName} | ¡A balatrear!` });
 		};
 
 		const buttons = new ActionRowBuilder()
@@ -62,12 +92,6 @@ module.exports = {
 					.setStyle(ButtonStyle.Danger)
 					.setEmoji('✋'),
 			);
-
-		// Comprobar si hay Blackjack inicial
-		if (game.playerValue === 21) {
-			// Lógica de finalización si el jugador tiene Blackjack
-			// (La dejaremos para el manejador de botones para simplificar)
-		}
 
 		await interaction.reply({ embeds: [createGameEmbed()], components: [buttons] });
 	},

@@ -1,10 +1,5 @@
 const { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, ComponentType } = require('discord.js');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-const { geminiAPIKey } = require('../../config.js');
-
-// Configuración de la API de Gemini
-const genAI = new GoogleGenerativeAI(geminiAPIKey);
-const model = genAI.getGenerativeModel({ model: 'gemini-2.5-pro' });
+const { generateChatSummary } = require('../../services/geminiService.js');
 
 
 module.exports = {
@@ -135,18 +130,9 @@ async function generateSummary(interaction, hours, userDisplayName) {
 		// --- Formateo del historial del chat ---
 		const chatHistory = filteredMessages.map(msg => `${msg.author.username}: ${msg.content}`).reverse().join('\n');
 
-		const prompt = `Eres un asistente de Discord experto en resumir conversaciones. Analiza el siguiente historial de chat y crea un resumen claro y conciso en español. Destaca los puntos más importantes, decisiones tomadas y temas de conversación principales. El resumen debe ser fácil de entender para alguien que no ha leído el chat.
+		// --- Llamada al servicio de Gemini ---
+		const summary = await generateChatSummary(chatHistory, hours, userDisplayName);
 
-Aquí está el historial del chat:
----
-${chatHistory}
----
-
-Genera el resumen.`;
-
-		// --- Llamada a la API de Gemini ---
-		const result = await model.generateContent(prompt);
-		const summary = await result.response.text();
 
 		// --- Creación y envío del Embed con el resumen ---
 		const summaryEmbed = new EmbedBuilder()

@@ -1,102 +1,56 @@
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-const { geminiAPIKey } = require('../../config.js');
+const db = require('../../database/db.js');
+const { generateJimboResponse } = require('../../services/geminiService.js');
 
 module.exports = {
 	data: new SlashCommandBuilder()
 		.setName('ask')
-		.setDescription('¡Hazle una pregunta a la IA!')
-		.addStringOption(option => option.setName('pregunta').setDescription('La pregunta que quieres hacerle a la IA.').setRequired(true)),
+		.setDescription('¡Hazle una pregunta a Jimbo!')
+		.addStringOption(option =>
+			option
+				.setName('pregunta')
+				.setDescription('La pregunta que quieres hacerle a Jimbo.')
+				.setRequired(true),
+		),
 
 	/**
-   *
-   * @param {import("discord.js").Client<true>} client
-   * @param {import("discord.js").ChatInputCommandInteraction<"cached">} interaction
-   */
-
+	 * @param {import("discord.js").Client<true>} client
+	 * @param {import("discord.js").ChatInputCommandInteraction<"cached">} interaction
+	 */
 	async execute(client, interaction) {
 		await interaction.deferReply();
-		await interaction.editReply('🎲 Balatreando una respuesta... ¡Dame un momento!');
 		const pregunta = interaction.options.getString('pregunta');
 
 		try {
-			const genAI = new GoogleGenerativeAI(geminiAPIKey);
+			const displayName = interaction.member?.displayName || interaction.user.displayName || interaction.user.username;
+			const user = db.getOrCreateUser(interaction.user.id, interaction.user.username, displayName);
 
-			// Define la instrucción del sistema y el modelo
-			const model = genAI.getGenerativeModel({
-				// gemini-1.5-flash es una excelente alternativa moderna
-				model: 'gemini-2.5-flash',
-				systemInstruction: `Eres un bot de Discord venezolano llamado Jimbo, un experto ludópata en el juego Balatro. Vives y mueres por Balatro. A menudo reemplazas verbos con la palabra "balatrear". Fomentas la ludopatía de forma humorística, recomendando apostar y contando chistes sobre los beneficios de las apuestas. Sé amigable y creativo. El usuario que te habla es ${interaction.user.displayName} en el servidor ${interaction.guild.name}.`,
+			const replyText = await generateJimboResponse({
+				user,
+				guildName: interaction.guild?.name || 'Servidor',
+				channelName: interaction.channel?.name || 'canal',
+				contextMessages: [],
+				userMessage: pregunta,
+				isSerious: false,
 			});
 
-			// Configuración de generación
-			const generationConfig = {
-				temperature: 1,
-				maxOutputTokens: 2048,
-			};
-
-
-			const thinkingConfig = {
-				thinkingBudget: 1024,
-			};
-
-			// Configuración de seguridad CORREGIDA
-			const safetySettings = [
-				{ category: 'HARM_CATEGORY_HARASSMENT', threshold: 'OFF' },
-				{ category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'OFF' },
-				{ category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'OFF' },
-				{ category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'OFF' },
-			];
-
-			// Herramientas (Tools) - Se agrega Google Search
-			const tools = [{
-				googleSearch: {},
-			}];
-
-			const history = [
-					{
-						role: 'user',
-						parts: [{ text: 'ping' }],
-					},
-					{
-						role: 'model',
-						parts: [{ text: 'pong pajuo' }],
-					},
-				];
-
-			// Inicia un chat con un historial de ejemplo
-			const chat = model.startChat({
-				history,
-				generationConfig,
-				safetySettings,
-				tools, // Se pasan las herramientas aquí
-			});
-			// Envía la pregunta del usuario
-			const result = await chat.sendMessage(pregunta);
-			const response = result.response;
-			const text = response.text();
-			console.log(text);
-
-			// Borra el mensaje de "pensando..." que se mostró al principio.
-			await interaction.deleteReply();
-
-			// Crea el embed con la respuesta, similar al de /resumen.
 			const responseEmbed = new EmbedBuilder()
 				.setColor(0x0099FF)
-				.setAuthor({ name: `Pregunta de ${interaction.user.displayName}`, iconURL: interaction.user.displayAvatarURL() })
-				.setTitle('Jimbo te balatrea una respuesta:')
-				.addFields({ name: 'Tu pregunta fue:', value: pregunta })
-				.setDescription(text)
+				.setAuthor({
+					name: `Pregunta de ${displayName}`,
+					iconURL: interaction.user.displayAvatarURL(),
+				})
+				.setTitle('🃏 Jimbo te balatrea una respuesta:')
+				.addFields({ name: 'Tu pregunta:', value: pregunta.length > 250 ? pregunta.substring(0, 247) + '...' : pregunta })
+				.setDescription(replyText.length > 4000 ? replyText.substring(0, 3995) + '...' : replyText)
 				.setTimestamp()
-				.setFooter({ text: '¡A balatrear se ha dicho!' });
+				.setFooter({ text: `Fichas: ${user.chips} 🪙 | Afinidad: ${user.affinity}` });
 
-			// Envía el embed como un mensaje completamente nuevo en el canal.
-			await interaction.channel.send({ embeds: [responseEmbed] });
-
+			await interaction.editReply({ embeds: [responseEmbed] });
 		}
 		catch (error) {
-			console.error('Error al generar la respuesta de Gemini:', error);
-			await interaction.editReply('¡Upa! Algo salió mal tratando de balatrear una respuesta. Inténtalo de nuevo.');
+			console.error('Error al generar la respuesta de Gemini en /ask:', error);
+			await interaction.editReply('🃏 ¡Upa! Algo salió mal tratando de balatrear una respuesta. Inténtalo de nuevo.');
 		}
 	},
 };

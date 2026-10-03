@@ -1,4 +1,5 @@
 const { Events } = require('discord.js');
+const { startReminderTicker } = require('../services/reminderTicker.js');
 
 module.exports = {
 	name: Events.ClientReady,
@@ -7,5 +8,6 @@ module.exports = {
 	once: true,
 	execute(client) {
 		console.log(`¡Listo! a balatrear como ${client.user.tag}`);
+		startReminderTicker(client);
 	},
 };

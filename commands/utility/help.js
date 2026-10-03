@@ -16,6 +16,7 @@ module.exports = {
 			embed.addFields({ name: `/${command.data.name}`, value: command.data.description });
 		});
 
-		await interaction.reply({ embeds: [embed], ephemeral: true });
+		await interaction.reply({ embeds: [embed], flags: 64 });
+
 	},
 };

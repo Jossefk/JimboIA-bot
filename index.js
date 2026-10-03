@@ -1,9 +1,19 @@
 const { token } = require('./config.js');
 const fs = require('node:fs');
 const path = require('node:path');
-const { Client, Collection, GatewayIntentBits } = require('discord.js');
+const { Client, Collection, GatewayIntentBits, Partials } = require('discord.js');
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({
+	intents: [
+		GatewayIntentBits.Guilds,
+		GatewayIntentBits.GuildMessages,
+		GatewayIntentBits.MessageContent,
+		GatewayIntentBits.DirectMessages,
+		GatewayIntentBits.GuildVoiceStates,
+	],
+	partials: [Partials.Channel, Partials.Message],
+});
+
 
 // --- CARGADOR DE COMANDOS ---
 client.commands = new Collection();
@@ -41,4 +51,18 @@ for (const file of eventFiles) {
 	}
 }
 
-client.login(token);
+// Manejo global de excepciones para evitar caídas inesperadas
+process.on('unhandledRejection', (reason, promise) => {
+	console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+	console.error('Uncaught Exception thrown:', error);
+});
+
+if (!token) {
+	console.error('[ERROR] No se encontró DISCORD_TOKEN en las variables de entorno (.env). Por favor configúralo.');
+}
+else {
+	client.login(token);
+}
