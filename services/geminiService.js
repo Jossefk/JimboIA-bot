@@ -39,7 +39,11 @@ async function callGeminiWithCascade(operation) {
 		}
 		catch (error) {
 			lastError = error;
-			console.warn(`[GEMINI CASCADE] Clave #${id} falló (${error.message || error.status}). Reintentando con siguiente clave...`);
+			const isClientError = error.status === 400 || (error.message && error.message.includes('INVALID_ARGUMENT'));
+			console.warn(`[GEMINI CASCADE] Clave #${id} falló (${error.message || error.status}). ${isClientError ? 'No se reintenta por ser error de cliente (400).' : 'Reintentando con siguiente clave...'}`);
+			if (isClientError) {
+				throw error;
+			}
 		}
 	}
 
@@ -165,9 +169,11 @@ REGLAS DE INTERACCIÓN (IMPORTANTE):
 	// Soporte multimodal para fotos y notas de voz / audios
 	if (attachments.length > 0) {
 		for (const att of attachments) {
-			const isImage = att.contentType && att.contentType.startsWith('image/');
+			const filenameLower = (att.name || '').toLowerCase();
+			const isImage = (att.contentType && att.contentType.startsWith('image/')) ||
+				/\.(png|jpe?g|webp|gif)$/i.test(filenameLower);
 			const isAudio = (att.contentType && att.contentType.startsWith('audio/')) ||
-				(att.name && (att.name.endsWith('.ogg') || att.name.endsWith('.mp3') || att.name.endsWith('.wav') || att.name.endsWith('.m4a')));
+				/\.(ogg|mp3|wav|m4a)$/i.test(filenameLower);
 
 			if (isImage || isAudio) {
 				try {
@@ -176,12 +182,17 @@ REGLAS DE INTERACCIÓN (IMPORTANTE):
 					const base64Data = Buffer.from(arrayBuffer).toString('base64');
 					let mimeType = att.contentType;
 					if (!mimeType || mimeType === 'application/octet-stream') {
-						if (att.name?.endsWith('.ogg')) mimeType = 'audio/ogg';
-						else if (att.name?.endsWith('.mp3')) mimeType = 'audio/mpeg';
-						else if (att.name?.endsWith('.wav')) mimeType = 'audio/wav';
-						else if (att.name?.endsWith('.png')) mimeType = 'image/png';
-						else if (att.name?.endsWith('.jpg') || att.name?.endsWith('.jpeg')) mimeType = 'image/jpeg';
+						if (filenameLower.endsWith('.ogg')) mimeType = 'audio/ogg';
+						else if (filenameLower.endsWith('.mp3')) mimeType = 'audio/mpeg';
+						else if (filenameLower.endsWith('.wav')) mimeType = 'audio/wav';
+						else if (filenameLower.endsWith('.png')) mimeType = 'image/png';
+						else if (filenameLower.endsWith('.jpg') || filenameLower.endsWith('.jpeg')) mimeType = 'image/jpeg';
+						else if (filenameLower.endsWith('.webp')) mimeType = 'image/webp';
+						else if (filenameLower.endsWith('.gif')) mimeType = 'image/gif';
 						else mimeType = isAudio ? 'audio/ogg' : 'image/png';
+					}
+					if (mimeType.includes(';')) {
+						mimeType = mimeType.split(';')[0].trim();
 					}
 					parts.push({
 						inlineData: {

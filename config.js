@@ -19,7 +19,7 @@ module.exports = {
 	guildId: process.env.GUILD_ID,
 	geminiAPIKey: keysList[0] || null,
 	geminiAPIKeys: keysList,
-	geminiModel: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
+	geminiModel: process.env.GEMINI_MODEL || 'gemini-3.5-flash',
 	chimeInRate: parseFloat(process.env.CHIME_IN_RATE || '0.03'),
 	ownerId: process.env.OWNER_ID || null,
 };
