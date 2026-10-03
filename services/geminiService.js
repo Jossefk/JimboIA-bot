@@ -1,14 +1,49 @@
 const { GoogleGenAI, HarmCategory, HarmBlockThreshold } = require('@google/genai');
-const { geminiAPIKey, geminiModel } = require('../config.js');
+const { geminiAPIKeys, geminiModel } = require('../config.js');
 const db = require('../database/db.js');
 const { jimboFunctionDeclarations, executeToolCall } = require('./toolsService.js');
 
-let client = null;
-function getClient() {
-	if (!client && geminiAPIKey) {
-		client = new GoogleGenAI({ apiKey: geminiAPIKey });
+let clientPool = [];
+let currentKeyIdx = 0;
+
+function getClientPool() {
+	if (clientPool.length === 0 && geminiAPIKeys && geminiAPIKeys.length > 0) {
+		clientPool = geminiAPIKeys.map((key, i) => ({
+			id: i + 1,
+			client: new GoogleGenAI({ apiKey: key }),
+		}));
 	}
-	return client;
+	return clientPool;
+}
+
+/**
+ * Ejecuta una operación con la API de Gemini usando rotación y cascada ante fallos
+ */
+async function callGeminiWithCascade(operation) {
+	const pool = getClientPool();
+	if (pool.length === 0) {
+		throw new Error('No hay claves de GEMINI_API_KEY configuradas.');
+	}
+
+	let lastError = null;
+	const startIndex = currentKeyIdx;
+
+	for (let attempt = 0; attempt < pool.length; attempt++) {
+		const targetIdx = (startIndex + attempt) % pool.length;
+		const { id, client } = pool[targetIdx];
+
+		try {
+			const result = await operation(client);
+			currentKeyIdx = (targetIdx + 1) % pool.length;
+			return result;
+		}
+		catch (error) {
+			lastError = error;
+			console.warn(`[GEMINI CASCADE] Clave #${id} falló (${error.message || error.status}). Reintentando con siguiente clave...`);
+		}
+	}
+
+	throw lastError;
 }
 
 // 0 Filtros: desactivar restricciones de seguridad para humor negro y rol de Jimbo
@@ -59,8 +94,8 @@ async function generateJimboResponse({
 	attachments = [],
 	isSerious = false,
 }) {
-	const aiClient = getClient();
-	if (!aiClient) {
+	const pool = getClientPool();
+	if (pool.length === 0) {
 		return '¡Epa! No tengo configurada mi `GEMINI_API_KEY` en el archivo `.env`. Pídele al administrador que la configure para poder balatrear.';
 	}
 
@@ -165,16 +200,18 @@ REGLAS DE INTERACCIÓN (IMPORTANTE):
 	contents.push({ role: 'user', parts });
 
 	try {
-		const response = await aiClient.models.generateContent({
-			model: geminiModel,
-			contents,
-			config: {
-				systemInstruction: personalityPrompt,
-				temperature: isSerious ? 0.7 : 1.0,
-				safetySettings: zeroSafetySettings,
-				tools: [{ functionDeclarations: jimboFunctionDeclarations }],
-			},
-		});
+		const response = await callGeminiWithCascade(aiClient =>
+			aiClient.models.generateContent({
+				model: geminiModel,
+				contents,
+				config: {
+					systemInstruction: personalityPrompt,
+					temperature: isSerious ? 0.7 : 1.0,
+					safetySettings: zeroSafetySettings,
+					tools: [{ functionDeclarations: jimboFunctionDeclarations }],
+				},
+			}),
+		);
 
 		// Manejo de Function Calling / Tools si Gemini invoca una herramienta
 		if (response.functionCalls && response.functionCalls.length > 0) {
@@ -198,15 +235,17 @@ REGLAS DE INTERACCIÓN (IMPORTANTE):
 			}
 
 			// Turno de respuesta con el resultado de la herramienta
-			const followUp = await aiClient.models.generateContent({
-				model: geminiModel,
-				contents,
-				config: {
-					systemInstruction: personalityPrompt,
-					temperature: isSerious ? 0.7 : 1.0,
-					safetySettings: zeroSafetySettings,
-				},
-			});
+			const followUp = await callGeminiWithCascade(aiClient =>
+				aiClient.models.generateContent({
+					model: geminiModel,
+					contents,
+					config: {
+						systemInstruction: personalityPrompt,
+						temperature: isSerious ? 0.7 : 1.0,
+						safetySettings: zeroSafetySettings,
+					},
+				}),
+			);
 
 			return followUp.text || '🃏 ¡Listo mi pana, acción completada!';
 		}
@@ -234,9 +273,6 @@ async function extractAndSaveMemoryInBackground(user, guildName, userMessage) {
 	// Solo analizar si el mensaje tiene suficiente longitud y no es un comando simple
 	if (!userMessage || userMessage.length < 15 || userMessage.startsWith('/')) return;
 
-	const aiClient = getClient();
-	if (!aiClient) return;
-
 	try {
 		const extractionPrompt = `Eres un extractor de memoria para un bot de Discord llamado Jimbo.
 Analiza el siguiente mensaje que el usuario "${user.display_name || user.username}" le dijo a Jimbo:
@@ -253,15 +289,17 @@ Responde ÚNICAMENTE un objeto JSON en este formato exacto:
 }
 Si el mensaje es trivial (como "hola", "qué tal", "jajaja", preguntas técnicas genéricas), responde {"has_memory": false}.`;
 
-		const res = await aiClient.models.generateContent({
-			model: 'gemini-3.5-flash-lite',
-			contents: [{ role: 'user', parts: [{ text: extractionPrompt }] }],
-			config: {
-				responseMimeType: 'application/json',
-				temperature: 0.2,
-				safetySettings: zeroSafetySettings,
-			},
-		});
+		const res = await callGeminiWithCascade(aiClient =>
+			aiClient.models.generateContent({
+				model: 'gemini-3.5-flash-lite',
+				contents: [{ role: 'user', parts: [{ text: extractionPrompt }] }],
+				config: {
+					responseMimeType: 'application/json',
+					temperature: 0.2,
+					safetySettings: zeroSafetySettings,
+				},
+			}),
+		);
 
 		if (res.text) {
 			const parsed = JSON.parse(res.text.trim());
@@ -283,11 +321,6 @@ Si el mensaje es trivial (como "hola", "qué tal", "jajaja", preguntas técnicas
  * Genera un resumen del chat para el comando /resumen
  */
 async function generateChatSummary(chatHistory, hours, requesterName) {
-	const aiClient = getClient();
-	if (!aiClient) {
-		throw new Error('Falta GEMINI_API_KEY');
-	}
-
 	const prompt = `Eres Jimbo, un experto en resumir conversaciones de Discord con chispa venezolana y estilo claro.
 El resumen fue pedido por ${requesterName || 'un usuario'}.
 Analiza el siguiente historial del chat de las últimas ${Math.round(hours)} horas y genera un resumen ordenado, entretenido y preciso en español.
@@ -303,15 +336,16 @@ ${chatHistory}
 
 Genera el resumen ahora:`;
 
-
-	const res = await aiClient.models.generateContent({
-		model: geminiModel,
-		contents: [{ role: 'user', parts: [{ text: prompt }] }],
-		config: {
-			temperature: 0.7,
-			safetySettings: zeroSafetySettings,
-		},
-	});
+	const res = await callGeminiWithCascade(aiClient =>
+		aiClient.models.generateContent({
+			model: geminiModel,
+			contents: [{ role: 'user', parts: [{ text: prompt }] }],
+			config: {
+				temperature: 0.7,
+				safetySettings: zeroSafetySettings,
+			},
+		}),
+	);
 
 	return res.text || 'No se pudo generar el resumen.';
 }
@@ -321,4 +355,5 @@ module.exports = {
 	generateChatSummary,
 	splitDiscordMessage,
 	zeroSafetySettings,
+	callGeminiWithCascade,
 };

@@ -8,9 +8,8 @@ const {
 	EndBehaviorType,
 } = require('@discordjs/voice');
 const { MsEdgeTTS, OUTPUT_FORMAT } = require('msedge-tts');
-const { GoogleGenAI } = require('@google/genai');
-const { geminiAPIKey, geminiModel } = require('../config.js');
-const { zeroSafetySettings } = require('./geminiService.js');
+const { geminiModel } = require('../config.js');
+const { zeroSafetySettings, callGeminiWithCascade } = require('./geminiService.js');
 const db = require('../database/db.js');
 
 // Mapa de conexiones activas por servidor
@@ -159,32 +158,31 @@ function setupVoiceReceiver(connData, voiceChannel) {
 				const combinedBuffer = Buffer.concat(audioChunks);
 				const base64Audio = combinedBuffer.toString('base64');
 
-				if (!geminiAPIKey) return;
-				const aiClient = new GoogleGenAI({ apiKey: geminiAPIKey });
-
 				const voicePrompt = `Eres Jimbo en un canal de voz de Discord. El usuario "${speakerName}" te acaba de hablar por micrófono.
 Escucha atentamente el audio adjunto y respóndele de forma muy concisa (1 o 2 oraciones cortas, máximo 30 palabras) con tu estilo venezolano, bromista y enérgico para que se escuche natural al hablar por voz.
 Evita listas o textos largos. Sé directo y divertido.`;
 
-				const res = await aiClient.models.generateContent({
-					model: geminiModel,
-					contents: [{
-						role: 'user',
-						parts: [
-							{ text: voicePrompt },
-							{
-								inlineData: {
-									mimeType: 'audio/ogg',
-									data: base64Audio,
+				const res = await callGeminiWithCascade(aiClient =>
+					aiClient.models.generateContent({
+						model: geminiModel,
+						contents: [{
+							role: 'user',
+							parts: [
+								{ text: voicePrompt },
+								{
+									inlineData: {
+										mimeType: 'audio/ogg',
+										data: base64Audio,
+									},
 								},
-							},
-						],
-					}],
-					config: {
-						temperature: 0.9,
-						safetySettings: zeroSafetySettings,
-					},
-				});
+							],
+						}],
+						config: {
+							temperature: 0.9,
+							safetySettings: zeroSafetySettings,
+						},
+					}),
+				);
 
 				if (res.text) {
 					await speakText(connData.guildId, res.text);
