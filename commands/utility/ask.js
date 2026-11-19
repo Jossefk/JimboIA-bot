@@ -40,17 +40,17 @@ module.exports = {
 					name: `Pregunta de ${displayName}`,
 					iconURL: interaction.user.displayAvatarURL(),
 				})
-				.setTitle('🃏 Jimbo te balatrea una respuesta:')
+				.setTitle('💬 Respuesta de Jimbo:')
 				.addFields({ name: 'Tu pregunta:', value: pregunta.length > 250 ? pregunta.substring(0, 247) + '...' : pregunta })
 				.setDescription(replyText.length > 4000 ? replyText.substring(0, 3995) + '...' : replyText)
 				.setTimestamp()
-				.setFooter({ text: `Fichas: ${user.chips} 🪙 | Afinidad: ${user.affinity}` });
+				.setFooter({ text: `Afinidad: ${user.affinity} | Fichas: ${user.chips} 🪙` });
 
 			await interaction.editReply({ embeds: [responseEmbed] });
 		}
 		catch (error) {
 			console.error('Error al generar la respuesta de Gemini en /ask:', error);
-			await interaction.editReply('🃏 ¡Upa! Algo salió mal tratando de balatrear una respuesta. Inténtalo de nuevo.');
+			await interaction.editReply('¡Upa! Algo salió mal tratando de responder eso. Inténtalo de nuevo.');
 		}
 	},
 };

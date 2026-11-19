@@ -31,16 +31,16 @@ describe('Reminders and FTS5 Tests', () => {
 		assert.strictEqual(foundAfter, undefined, 'Completed reminder should not be in due list');
 	});
 
-	it('should search memories using FTS5 virtual table', () => {
+	it('should search memories using FTS5 virtual table even with full conversational sentences', () => {
 		db.addMemory(testUserId, testGuildId, 'anime', 'Su anime favorito de toda la vida es One Piece', 4);
 		db.addMemory(testUserId, testGuildId, 'trabajo', 'Trabaja remoto como desarrollador backend', 3);
 
-		const search1 = db.searchMemories('Piece');
-		assert.ok(search1.length >= 1, 'Should find memories with "Piece"');
+		const search1 = db.searchMemories('Hola Jimbo que opinas de One Piece en el manga?');
+		assert.ok(search1.length >= 1, 'Should find memories with "Piece" inside a full sentence');
 		assert.ok(search1.some(m => m.content.includes('One Piece')));
 
-		const search2 = db.searchMemories('remoto');
-		assert.ok(search2.length >= 1, 'Should find memories with "remoto"');
+		const search2 = db.searchMemories('como me va en mi trabajo remoto hoy', 5, { userId: testUserId, guildId: testGuildId });
+		assert.ok(search2.length >= 1, 'Should find memories with "remoto" in scoped search');
 		assert.ok(search2.some(m => m.content.includes('backend')));
 	});
 });

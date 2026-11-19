@@ -1,17 +1,16 @@
-const {
-	joinVoiceChannel,
-	createAudioPlayer,
-	createAudioResource,
-	AudioPlayerStatus,
-	VoiceConnectionStatus,
-	entersState,
-	EndBehaviorType,
-} = require('@discordjs/voice');
 const { MsEdgeTTS, OUTPUT_FORMAT } = require('msedge-tts');
 const prism = require('prism-media');
 const { geminiModel } = require('../config.js');
-const { zeroSafetySettings, callGeminiWithCascade } = require('./geminiService.js');
+const { zeroSafetySettings, callGemini } = require('./geminiService.js');
 const db = require('../database/db.js');
+
+let discordVoice = null;
+function getDiscordVoice() {
+	if (!discordVoice) {
+		discordVoice = require('@discordjs/voice');
+	}
+	return discordVoice;
+}
 
 // Mapa de conexiones activas por servidor
 const activeConnections = new Map();
@@ -71,6 +70,7 @@ async function speakText(guildId, text) {
 	if (!clean) return false;
 
 	try {
+		const { createAudioResource } = getDiscordVoice();
 		const tts = new MsEdgeTTS();
 		await tts.setMetadata('es-VE-SebastianNeural', OUTPUT_FORMAT.AUDIO_24KHZ_96KBITRATE_MONO_MP3);
 		const { audioStream } = tts.toStream(clean);
@@ -96,6 +96,13 @@ async function joinVoice(voiceChannel) {
 	if (activeConnections.has(guildId)) {
 		return activeConnections.get(guildId);
 	}
+
+	const {
+		joinVoiceChannel,
+		createAudioPlayer,
+		VoiceConnectionStatus,
+		entersState,
+	} = getDiscordVoice();
 
 	const connection = joinVoiceChannel({
 		channelId: voiceChannel.id,
@@ -124,7 +131,7 @@ async function joinVoice(voiceChannel) {
 
 		// Saludo inicial de Jimbo en el canal de voz
 		setTimeout(() => {
-			speakText(guildId, '¡Qué pasó panas! Llegó Jimbo al voice, ¿qué es lo que se balatrea por acá?');
+			speakText(guildId, '¡Qué pasó panas! Ya llegué al voice, ¿qué se cuenta por acá?');
 		}, 1000);
 	}
 	catch (err) {
@@ -155,6 +162,7 @@ async function joinVoice(voiceChannel) {
  * Escucha a los participantes del canal cuando terminan de hablar y responde
  */
 function setupVoiceReceiver(connData, voiceChannel) {
+	const { AudioPlayerStatus, EndBehaviorType } = getDiscordVoice();
 	const receiver = connData.connection.receiver;
 
 	receiver.speaking.on('start', (userId) => {
@@ -219,10 +227,10 @@ function setupVoiceReceiver(connData, voiceChannel) {
 				const base64Audio = wavBuffer.toString('base64');
 
 				const voicePrompt = `Eres Jimbo en un canal de voz de Discord. El usuario "${speakerName}" te acaba de hablar por micrófono.
-Escucha atentamente el audio adjunto y respóndele de forma muy concisa (1 o 2 oraciones cortas, máximo 30 palabras) con tu estilo venezolano, bromista y enérgico para que se escuche natural al hablar por voz.
-Evita listas o textos largos. Sé directo y divertido.`;
+Escucha atentamente el audio adjunto y respóndele de forma muy concisa (1 oración corta, máximo 20 palabras) con tu estilo venezolano, bromista y directo para que se escuche natural por voz.
+Prohibido meter referencias forzadas a cartas o Balatro.`;
 
-				const res = await callGeminiWithCascade(aiClient =>
+				const res = await callGemini(aiClient =>
 					aiClient.models.generateContent({
 						model: geminiModel,
 						contents: [{
@@ -238,7 +246,7 @@ Evita listas o textos largos. Sé directo y divertido.`;
 							],
 						}],
 						config: {
-							temperature: 0.9,
+							temperature: 0.85,
 							safetySettings: zeroSafetySettings,
 						},
 					}),

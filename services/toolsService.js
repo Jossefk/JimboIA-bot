@@ -59,10 +59,33 @@ const searchMemoryDeclaration = {
 		properties: {
 			query: {
 				type: Type.STRING,
-				description: 'Palabra clave a buscar en la memoria (ej: "anime", "trabajo", "juego", "comida").',
+				description: 'Palabras clave a buscar en la memoria (ej: "anime", "trabajo", "juego", "comida").',
 			},
 		},
 		required: ['query'],
+	},
+};
+
+const saveMemoryDeclaration = {
+	name: 'save_memory',
+	description: 'Guarda o actualiza un hecho importante, gusto, trabajo o dato personal en la memoria a largo plazo cuando el usuario pida que recuerdes algo.',
+	parameters: {
+		type: Type.OBJECT,
+		properties: {
+			category: {
+				type: Type.STRING,
+				description: 'Categoría del recuerdo: "gusto", "trabajo", "anecdota", "vida", "anime", "juego" o "general".',
+			},
+			content: {
+				type: Type.STRING,
+				description: 'El dato o hecho conciso a recordar sobre el usuario (en tercera persona, ej: "Su cumpleaños es el 14 de mayo").',
+			},
+			importance: {
+				type: Type.NUMBER,
+				description: 'Nivel de importancia del 1 al 5 (3 = normal, 5 = dato crítico).',
+			},
+		},
+		required: ['content'],
 	},
 };
 
@@ -70,6 +93,7 @@ const jimboFunctionDeclarations = [
 	setReminderDeclaration,
 	getDolarRateDeclaration,
 	searchMemoryDeclaration,
+	saveMemoryDeclaration,
 ];
 
 // 2. Ejecutores de herramientas
@@ -157,14 +181,31 @@ async function executeToolCall({ name, args }, { userId, channelId, guildId }) {
 	}
 
 	if (name === 'search_memory') {
-		const results = db.searchMemories(args.query, 4);
+		const results = db.searchMemories(args.query, 5, { userId, guildId });
 		return {
 			query: args.query,
 			results: results.map(r => ({
+				usuario: r.display_name || r.username || 'general',
 				categoria: r.category,
 				recuerdo: r.content,
 				importancia: r.importance,
 			})),
+		};
+	}
+
+	if (name === 'save_memory') {
+		const memoryId = db.addMemory(
+			userId,
+			guildId,
+			args.category || 'general',
+			args.content,
+			args.importance || 3,
+		);
+		return {
+			status: 'success',
+			memory_id: memoryId,
+			category: args.category || 'general',
+			content: args.content,
 		};
 	}
 

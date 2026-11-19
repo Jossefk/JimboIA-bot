@@ -9,15 +9,47 @@ describe('Tools Service Tests', () => {
 
 	after(() => {
 		db.db.exec(`DELETE FROM reminders WHERE user_id = '${testUserId}';`);
+		db.db.exec(`DELETE FROM memories WHERE user_id = '${testUserId}';`);
 		db.db.exec(`DELETE FROM users WHERE user_id = '${testUserId}';`);
 	});
 
 	it('should declare tools properly', () => {
-		assert.strictEqual(jimboFunctionDeclarations.length, 3);
+		assert.strictEqual(jimboFunctionDeclarations.length, 4);
 		const names = jimboFunctionDeclarations.map(t => t.name);
 		assert.ok(names.includes('set_reminder'));
 		assert.ok(names.includes('get_dolar_rate'));
 		assert.ok(names.includes('search_memory'));
+		assert.ok(names.includes('save_memory'));
+	});
+
+	it('should execute save_memory tool and deduplicate similar memories', async () => {
+		db.getOrCreateUser(testUserId, 'tooluser', 'Tool User');
+		const res1 = await executeToolCall({
+			name: 'save_memory',
+			args: {
+				category: 'trabajo',
+				content: 'Trabaja como programador backend en Node.js',
+				importance: 4,
+			},
+		}, { userId: testUserId, channelId: testChannelId, guildId: testGuildId });
+
+		assert.strictEqual(res1.status, 'success');
+		assert.ok(res1.memory_id > 0);
+
+		// Guardar un recuerdo muy similar debe actualizar el existente en vez de duplicarlo
+		const res2 = await executeToolCall({
+			name: 'save_memory',
+			args: {
+				category: 'trabajo',
+				content: 'Trabaja como programador backend en Node.js y Docker',
+				importance: 5,
+			},
+		}, { userId: testUserId, channelId: testChannelId, guildId: testGuildId });
+
+		assert.strictEqual(res2.memory_id, res1.memory_id);
+		const memories = db.getUserMemories(testUserId, 10);
+		assert.strictEqual(memories.length, 1);
+		assert.strictEqual(memories[0].importance, 5);
 	});
 
 	it('should execute set_reminder tool correctly', async () => {

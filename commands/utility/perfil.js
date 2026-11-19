@@ -22,7 +22,7 @@ module.exports = {
 		const displayName = member?.displayName || targetUser.displayName || targetUser.username;
 
 		const userRecord = db.getOrCreateUser(targetUser.id, targetUser.username, displayName);
-		const memories = db.getUserMemories(targetUser.id, 5);
+		const memories = db.getUserMemories(targetUser.id, 6);
 
 		let affinityStatus = 'Neutral (aún se están conociendo)';
 		if (userRecord.affinity >= 30) {
@@ -46,18 +46,25 @@ module.exports = {
 			? memories.map(m => `• **[${m.category}]**: ${m.content}`).join('\n')
 			: '_Jimbo aún no ha registrado recuerdos personales sobre ti. ¡Háblale en el chat para que aprenda!_';
 
+		const fields = [
+			{ name: '🎭 Afinidad con Jimbo', value: `${userRecord.affinity} pts (${affinityStatus})`, inline: true },
+			{ name: '🪙 Fichas', value: `**${userRecord.chips}** fichas`, inline: true },
+			{ name: '🎲 Historial Blackjack', value: `${userRecord.total_games_won}V / ${userRecord.total_games_played}P (Winrate: ${winRate})`, inline: true },
+		];
+
+		if (userRecord.personality_notes && userRecord.personality_notes.trim()) {
+			fields.push({ name: '📝 Resumen de Perfil', value: userRecord.personality_notes.trim() });
+		}
+
+		fields.push({ name: '🧠 Lo que Jimbo recuerda de ti', value: memoriesList });
+
 		const embed = new EmbedBuilder()
 			.setColor(0x0099FF)
 			.setAuthor({ name: `Perfil de ${displayName}`, iconURL: targetUser.displayAvatarURL() })
-			.setTitle('🃏 Ficha de Jugador Balatriano')
-			.addFields(
-				{ name: '🪙 Fichas Disponibles', value: `**${userRecord.chips}** fichas`, inline: true },
-				{ name: '🎭 Afinidad con Jimbo', value: `${userRecord.affinity} pts (${affinityStatus})`, inline: true },
-				{ name: '🎲 Historial Blackjack', value: `${userRecord.total_games_won}V / ${userRecord.total_games_played}P (Winrate: ${winRate})`, inline: true },
-				{ name: '🧠 Lo que Jimbo recuerda de ti', value: memoriesList },
-			)
+			.setTitle('👤 Perfil y Memoria de Usuario')
+			.addFields(fields)
 			.setTimestamp()
-			.setFooter({ text: '¡Sigue balatreando para ganar más fichas y forjar tu historia!' });
+			.setFooter({ text: 'Memoria a largo plazo de Jimbo' });
 
 		await interaction.reply({ embeds: [embed] });
 	},

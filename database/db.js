@@ -136,19 +136,46 @@ const stmtAddMemory = db.prepare(`
 	INSERT INTO memories (user_id, guild_id, category, content, importance)
 	VALUES (?, ?, ?, ?, ?)
 `);
+const stmtUpdateMemory = db.prepare(`
+	UPDATE memories
+	SET category = ?, content = ?, importance = ?, created_at = datetime('now')
+	WHERE id = ?
+`);
+const stmtDeleteMemory = db.prepare(`
+	DELETE FROM memories WHERE id = ?
+`);
+const stmtDeleteUserMemory = db.prepare(`
+	DELETE FROM memories WHERE id = ? AND user_id = ?
+`);
+const stmtUpdatePersonalityNotes = db.prepare(`
+	UPDATE users
+	SET personality_notes = ?, updated_at = datetime('now')
+	WHERE user_id = ?
+`);
 const stmtGetUserMemories = db.prepare(`
-	SELECT id, category, content, importance, created_at
+	SELECT id, user_id, guild_id, category, content, importance, created_at
 	FROM memories
 	WHERE user_id = ?
 	ORDER BY importance DESC, id DESC
 	LIMIT ?
 `);
 const stmtGetServerMemories = db.prepare(`
-	SELECT id, user_id, category, content, importance, created_at
-	FROM memories
-	WHERE guild_id = ?
-	ORDER BY id DESC
+	SELECT m.id, m.user_id, m.guild_id, m.category, m.content, m.importance, m.created_at,
+		u.username, u.display_name
+	FROM memories m
+	LEFT JOIN users u ON u.user_id = m.user_id
+	WHERE m.guild_id = ?
+	ORDER BY m.importance DESC, m.id DESC
 	LIMIT ?
+`);
+const stmtPruneUserMemories = db.prepare(`
+	DELETE FROM memories
+	WHERE id IN (
+		SELECT id FROM memories
+		WHERE user_id = ?
+		ORDER BY importance DESC, id DESC
+		LIMIT -1 OFFSET ?
+	)
 `);
 const stmtGetLeaderboard = db.prepare(`
 	SELECT user_id, username, display_name, chips, total_games_won, total_games_played
@@ -215,17 +242,120 @@ function recordGameResult(userId, won, chipsDelta) {
 	return stmtGetUser.get(userId);
 }
 
+const MAX_MEMORIES_PER_USER = 30;
+
+const STOPWORDS_ES = new Set([
+	'de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se', 'las', 'por', 'un', 'para',
+	'con', 'no', 'una', 'su', 'al', 'lo', 'como', 'mas', 'más', 'pero', 'sus', 'le', 'ya',
+	'o', 'este', 'si', 'sí', 'porque', 'esta', 'está', 'entre', 'cuando', 'muy', 'sin',
+	'sobre', 'tambien', 'también', 'me', 'hasta', 'hay', 'donde', 'dónde', 'quien', 'quién',
+	'desde', 'todo', 'nos', 'durante', 'todos', 'uno', 'les', 'ni', 'contra', 'otros',
+	'ese', 'eso', 'ante', 'ellos', 'esto', 'mi', 'mis', 'tu', 'tus', 'antes', 'algunos',
+	'unos', 'yo', 'otro', 'otras', 'otra', 'tanto', 'esa', 'estos', 'mucho', 'quienes',
+	'nada', 'muchos', 'cual', 'cuál', 'poco', 'ella', 'estar', 'estas', 'algunas', 'algo',
+	'nosotros', 'hola', 'jimbo', 'jimbot', 'chamo', 'pana', 'epa', 'que', 'qué', 'como',
+	'cómo', 'eres', 'soy', 'fue', 'son', 'era', 'ser', 'tiene', 'tengo', 'hacer', 'hace',
+	'and', 'or', 'not', 'near',
+]);
+
+function normalizeText(str = '') {
+	return str
+		.toLowerCase()
+		.normalize('NFD')
+		.replace(/[\u0300-\u036f]/g, '')
+		.replace(/[^\w\sñ]/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim();
+}
+
+function extractSignificantWords(str = '') {
+	return normalizeText(str)
+		.split(' ')
+		.filter(w => w.length >= 3 && !STOPWORDS_ES.has(w));
+}
+
 /**
- * Guarda una nueva memoria o aprendizaje
+ * Actualiza las notas de personalidad/perfil resumido de un usuario
  */
-function addMemory(userId, guildId, category, content, importance = 1) {
-	stmtAddMemory.run(userId || null, guildId || null, category, content, importance);
+function updatePersonalityNotes(userId, notes) {
+	if (!userId || typeof notes !== 'string') return;
+	stmtUpdatePersonalityNotes.run(notes.trim().slice(0, 250), userId);
+}
+
+/**
+ * Guarda una nueva memoria o actualiza una existente si es muy similar (evita duplicados)
+ */
+function addMemory(userId, guildId, category, content, importance = 2) {
+	if (!content || typeof content !== 'string') return null;
+	const cleanContent = content.trim();
+	if (!cleanContent) return null;
+	const cleanCategory = (category || 'general').trim().toLowerCase();
+	const clampedImportance = Math.min(5, Math.max(1, Number(importance) || 2));
+
+	if (userId) {
+		const existingMemories = stmtGetUserMemories.all(userId, 50);
+		const newNorm = normalizeText(cleanContent);
+		const newWords = extractSignificantWords(cleanContent);
+
+		for (const mem of existingMemories) {
+			const oldNorm = normalizeText(mem.content);
+			if (oldNorm === newNorm) {
+				const mergedImportance = Math.max(mem.importance, clampedImportance);
+				stmtUpdateMemory.run(cleanCategory, cleanContent, mergedImportance, mem.id);
+				return mem.id;
+			}
+
+			if (newWords.length >= 2) {
+				const oldWords = new Set(extractSignificantWords(mem.content));
+				if (oldWords.size >= 2) {
+					const overlap = newWords.filter(w => oldWords.has(w)).length;
+					const minLen = Math.min(newWords.length, oldWords.size);
+					const similarity = overlap / minLen;
+					const threshold = mem.category === cleanCategory ? 0.65 : 0.8;
+					if (similarity >= threshold) {
+						const mergedImportance = Math.max(mem.importance, clampedImportance);
+						stmtUpdateMemory.run(cleanCategory, cleanContent, mergedImportance, mem.id);
+						return mem.id;
+					}
+				}
+			}
+		}
+	}
+
+	const result = stmtAddMemory.run(userId || null, guildId || null, cleanCategory, cleanContent, clampedImportance);
+
+	if (userId) {
+		stmtPruneUserMemories.run(userId, MAX_MEMORIES_PER_USER);
+	}
+
+	return Number(result.lastInsertRowid);
+}
+
+/**
+ * Actualiza un recuerdo existente por su ID
+ */
+function updateMemory(memoryId, { category, content, importance }) {
+	if (!memoryId || !content) return false;
+	const clampedImportance = Math.min(5, Math.max(1, Number(importance) || 2));
+	const res = stmtUpdateMemory.run((category || 'general').trim().toLowerCase(), content.trim(), clampedImportance, memoryId);
+	return res.changes > 0;
+}
+
+/**
+ * Elimina un recuerdo por su ID (opcionalmente validando que pertenezca al userId)
+ */
+function deleteMemory(memoryId, userId = null) {
+	if (!memoryId) return false;
+	const res = userId
+		? stmtDeleteUserMemory.run(memoryId, userId)
+		: stmtDeleteMemory.run(memoryId);
+	return res.changes > 0;
 }
 
 /**
  * Obtiene las memorias asociadas a un usuario específico
  */
-function getUserMemories(userId, limit = 5) {
+function getUserMemories(userId, limit = 6) {
 	return stmtGetUserMemories.all(userId, limit);
 }
 
@@ -302,10 +432,23 @@ const stmtGetUserPendingReminders = db.prepare(`
 	LIMIT ?
 `);
 const stmtSearchMemories = db.prepare(`
-	SELECT m.id, m.user_id, m.guild_id, m.category, m.content, m.importance, m.created_at
+	SELECT m.id, m.user_id, m.guild_id, m.category, m.content, m.importance, m.created_at,
+		u.username, u.display_name
 	FROM memories_fts fts
 	JOIN memories m ON m.id = fts.rowid
+	LEFT JOIN users u ON u.user_id = m.user_id
 	WHERE memories_fts MATCH ?
+	ORDER BY rank, m.importance DESC
+	LIMIT ?
+`);
+const stmtSearchMemoriesScoped = db.prepare(`
+	SELECT m.id, m.user_id, m.guild_id, m.category, m.content, m.importance, m.created_at,
+		u.username, u.display_name
+	FROM memories_fts fts
+	JOIN memories m ON m.id = fts.rowid
+	LEFT JOIN users u ON u.user_id = m.user_id
+	WHERE memories_fts MATCH ?
+		AND (m.user_id = ? OR m.guild_id = ? OR m.guild_id IS NULL)
 	ORDER BY rank, m.importance DESC
 	LIMIT ?
 `);
@@ -340,13 +483,27 @@ function getUserPendingReminders(userId, limit = 5) {
 }
 
 /**
- * Busca recuerdos en el índice FTS5 por palabras clave
+ * Busca recuerdos en el índice FTS5 por palabras clave relevantes usando OR y prefijos
  */
-function searchMemories(query, limit = 5) {
+function searchMemories(query, limit = 5, options = {}) {
 	try {
-		const sanitized = query.replace(/[^\w\sñáéíóú]/gi, ' ').trim();
-		if (!sanitized) return [];
-		return stmtSearchMemories.all(sanitized, limit);
+		if (!query || typeof query !== 'string') return [];
+		const rawTokens = query
+			.replace(/[^\w\sñáéíóúü]/gi, ' ')
+			.split(/\s+/)
+			.map(t => t.trim())
+			.filter(t => t.length >= 3 && !STOPWORDS_ES.has(t.toLowerCase()));
+
+		if (rawTokens.length === 0) return [];
+
+		// Construir expresión FTS5 con OR para encontrar cualquier recuerdo que coincida con palabras clave de la frase
+		const uniqueTokens = [...new Set(rawTokens)].slice(0, 8);
+		const ftsQuery = uniqueTokens.map(t => `"${t}"*`).join(' OR ');
+
+		if (options.userId || options.guildId) {
+			return stmtSearchMemoriesScoped.all(ftsQuery, options.userId || '', options.guildId || '', limit);
+		}
+		return stmtSearchMemories.all(ftsQuery, limit);
 	}
 	catch {
 		return [];
@@ -361,6 +518,9 @@ module.exports = {
 	adjustAffinity,
 	recordGameResult,
 	addMemory,
+	updateMemory,
+	deleteMemory,
+	updatePersonalityNotes,
 	getUserMemories,
 	getServerMemories,
 	getLeaderboard,
