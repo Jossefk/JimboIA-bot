@@ -1,5 +1,6 @@
 const { Type } = require('@google/genai');
 const db = require('../database/db.js');
+const { LIMBO_ITEMS, findLimboItem } = require('../utils/limboCatalog.js');
 
 // 1. Declaraciones de herramientas para Gemini
 const setReminderDeclaration = {
@@ -134,6 +135,62 @@ const updatePersonProfileDeclaration = {
 	},
 };
 
+const limboShopDeclaration = {
+	name: 'limbo_shop',
+	description: 'Gestiona el puesto clandestino de pociones chimbas, empanadas y reliquias del Limbo de Jimbo: ver catálogo, vender un ítem al usuario usando sus fichas, ver su mochila o consumir un ítem.',
+	parameters: {
+		type: Type.OBJECT,
+		properties: {
+			action: {
+				type: Type.STRING,
+				description: 'Acción a realizar: "catalog", "buy", "inventory" o "use".',
+			},
+			item_key: {
+				type: Type.STRING,
+				description: 'Clave o nombre del ítem para comprar o consumir (ej: "pocion_chamba", "empanada_limbo", "polvo_copium").',
+			},
+		},
+		required: ['action'],
+	},
+};
+
+const existentialInvoiceDeclaration = {
+	name: 'existential_invoice',
+	description: 'Recopila la ficha, recuerdos reales, inventario y contexto reciente de una persona del servidor para lanzarle una factura existencial o profecía oscura personalizada.',
+	parameters: {
+		type: Type.OBJECT,
+		properties: {
+			target_name: {
+				type: Type.STRING,
+				description: 'Nombre, apodo o mención de la persona. Si se omite, aplica al usuario que está hablando.',
+			},
+		},
+	},
+};
+
+const limboContractDeclaration = {
+	name: 'limbo_contract',
+	description: 'Gestiona los contratos o misiones diarias clandestinas del Limbo (consultar contrato activo, asignar una misión cómica/útil con recompensa en fichas, o cobrarla al completarla).',
+	parameters: {
+		type: Type.OBJECT,
+		properties: {
+			action: {
+				type: Type.STRING,
+				description: 'Acción a realizar: "get", "create" o "complete".',
+			},
+			contract_text: {
+				type: Type.STRING,
+				description: 'Descripción corta del contrato/misión si action es "create".',
+			},
+			reward_chips: {
+				type: Type.NUMBER,
+				description: 'Recompensa en fichas entre 40 y 200 (por defecto 100).',
+			},
+		},
+		required: ['action'],
+	},
+};
+
 const jimboFunctionDeclarations = [
 	setReminderDeclaration,
 	getDolarRateDeclaration,
@@ -141,6 +198,9 @@ const jimboFunctionDeclarations = [
 	saveMemoryDeclaration,
 	getPersonProfileDeclaration,
 	updatePersonProfileDeclaration,
+	limboShopDeclaration,
+	existentialInvoiceDeclaration,
+	limboContractDeclaration,
 ];
 
 // 2. Ejecutores de herramientas
@@ -379,6 +439,150 @@ async function executeToolCall({ name, args }, {
 				personality_notes: updated.personality_notes || '',
 			},
 		};
+	}
+
+	if (name === 'limbo_shop') {
+		const action = String(args.action || 'catalog').toLowerCase();
+		const userRow = db.db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
+		const currentChips = userRow ? userRow.chips : 0;
+
+		if (action === 'catalog') {
+			return {
+				saldo_fichas: currentChips,
+				mercancia: LIMBO_ITEMS.map(i => ({
+					key: i.key,
+					nombre: i.name,
+					precio: i.price,
+					efecto: i.effect,
+				})),
+			};
+		}
+
+		if (action === 'inventory') {
+			return {
+				saldo_fichas: currentChips,
+				mochila: db.getUserInventory(userId, 15),
+			};
+		}
+
+		if (action === 'buy') {
+			const item = findLimboItem(args.item_key);
+			if (!item) {
+				return {
+					status: 'not_found',
+					disponibles: LIMBO_ITEMS.map(i => i.key),
+				};
+			}
+
+			if (currentChips < item.price) {
+				return {
+					status: 'insufficient_funds',
+					precio: item.price,
+					saldo_actual: currentChips,
+					item: item.name,
+				};
+			}
+
+			const nuevoSaldo = db.addChips(userId, -item.price);
+			db.addInventoryItem(userId, item.key, item.name, item.effect, 1);
+
+			return {
+				status: 'success',
+				comprado: item.name,
+				item_key: item.key,
+				efecto: item.effect,
+				gastado: item.price,
+				nuevo_saldo: nuevoSaldo,
+			};
+		}
+
+		if (action === 'use') {
+			const catalogItem = findLimboItem(args.item_key);
+			const inventory = db.getUserInventory(userId, 20);
+			const owned = catalogItem
+				? inventory.find(i => i.item_key === catalogItem.key)
+				: inventory.find(i => i.item_key === args.item_key || i.item_name.toLowerCase().includes(String(args.item_key || '').toLowerCase()));
+
+			if (!owned) {
+				return {
+					status: 'not_owned',
+					message: 'No tienes ese producto en tu mochila del Limbo.',
+				};
+			}
+
+			const consumed = db.consumeInventoryItem(userId, owned.item_key);
+			return {
+				status: 'consumed',
+				item: consumed.item_name,
+				efecto: consumed.item_effect,
+				restantes: consumed.remaining,
+			};
+		}
+
+		return { error: `Acción de tienda desconocida: ${action}` };
+	}
+
+	if (name === 'existential_invoice') {
+		const person = args.target_name
+			? resolvePersonByQuery(args.target_name, guildId, guild)
+			: db.db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
+
+		if (!person) {
+			return {
+				found: false,
+				message: 'No tengo expediente guardado de esa persona todavía.',
+			};
+		}
+
+		const memories = db.getUserMemories(person.user_id, 8, {
+			channelId,
+			includePrivate: isPrivate,
+		});
+		const inventory = db.getUserInventory(person.user_id, 5);
+		const recentEpisodes = channelId ? db.getRecentChannelEpisodes(channelId, 2) : [];
+
+		return {
+			found: true,
+			persona: person.display_name || person.username,
+			ficha: {
+				nombre_real: person.real_name || '',
+				apodos: person.aliases || '',
+				perfil: person.personality_notes || '',
+				fichas: person.chips,
+				afinidad: person.affinity,
+			},
+			recuerdos: memories.map(m => ({
+				categoria: m.category,
+				contenido: m.content,
+			})),
+			mochila: inventory.map(i => `${i.item_name} (x${i.quantity})`),
+			episodios_recientes: recentEpisodes.map(e => e.summary),
+		};
+	}
+
+	if (name === 'limbo_contract') {
+		const action = String(args.action || 'get').toLowerCase();
+		if (action === 'get') {
+			const active = db.getActiveContract(userId);
+			return active
+				? { status: 'active', contract: active }
+				: { status: 'none', message: 'No tienes ningún contrato activo en el Limbo ahora mismo.' };
+		}
+
+		if (action === 'create') {
+			return db.createDailyContract(
+				userId,
+				guildId,
+				args.contract_text || 'Sobrevivir la jornada sin perder la cordura y tomar agua',
+				args.reward_chips || 100,
+			);
+		}
+
+		if (action === 'complete') {
+			return db.completeDailyContract(userId);
+		}
+
+		return { error: `Acción de contrato desconocida: ${action}` };
 	}
 
 	return { error: `Herramienta desconocida: ${name}` };

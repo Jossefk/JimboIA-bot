@@ -21,7 +21,7 @@ function startReminderTicker(client) {
 			for (const reminder of dueReminders) {
 				try {
 					const userTag = `<@${reminder.user_id}>`;
-					const reminderContent = `⏰ ¡Epa ${userTag}! Me pediste que te recordara esto:\n> **${reminder.reminder_text}**\n¡Pilas con eso, chamo!`;
+					const reminderContent = `⏰ ¡Epa ${userTag}! Se te venció el plazo en el Limbo:\n> **${reminder.reminder_text}**\n¡Pilas con eso, chamo!`;
 
 					if (reminder.send_dm) {
 						try {

@@ -11,8 +11,8 @@ const { chimeInRate: defaultChimeRate } = require('../config.js');
 
 // Palabras clave que llaman la atención de Jimbo
 const JIMBO_DIRECT_KEYWORDS = ['jimbo', 'jimbot'];
-const BALATRO_KEYWORDS = ['balatro', 'joker', 'blackjack'];
-const REACTION_EMOJIS = ['💀', '🔥', '👀', '🃏', '🎰'];
+const LIMBO_KEYWORDS = ['pocion', 'poción', 'empanada', 'limbo', 'almas', 'chamba', 'quincena', 'blackjack', 'mercancia', 'mercancía'];
+const REACTION_EMOJIS = ['💀', '🧪', '🥟', '🕯️', '👀', '🔥'];
 
 // Cooldown ligero por canal para evitar spam de respuestas espontáneas
 const channelCooldowns = new Map();
@@ -200,8 +200,8 @@ module.exports = {
 		// 3. Detectar si llaman a Jimbo por su nombre
 		const mentionsName = JIMBO_DIRECT_KEYWORDS.some(kw => contentLower.includes(kw));
 
-		// 4. Detectar si hablan de Balatro
-		const mentionsBalatro = BALATRO_KEYWORDS.some(kw => contentLower.includes(kw));
+		// 4. Detectar si hablan de temas del puesto del Limbo o la rutina
+		const mentionsLimbo = LIMBO_KEYWORDS.some(kw => contentLower.includes(kw));
 
 		// Obtener configuración del servidor
 		const serverSettings = message.guildId ? db.getServerSettings(message.guildId) : null;
@@ -225,8 +225,8 @@ module.exports = {
 		else if (mentionsName) {
 			shouldRespond = Math.random() < 0.85;
 		}
-		else if (mentionsBalatro) {
-			shouldRespond = Math.random() < 0.2;
+		else if (mentionsLimbo) {
+			shouldRespond = Math.random() < 0.15;
 			isSpontaneous = true;
 		}
 		else {
@@ -238,7 +238,7 @@ module.exports = {
 		// Si no va a responder, acumular el mensaje para aprendizaje pasivo por lotes
 		if (!shouldRespond) {
 			enqueuePassiveMessage(message, displayName, isPrivate);
-			if (mentionsBalatro || Math.random() < 0.03) {
+			if (mentionsLimbo || Math.random() < 0.03) {
 				try {
 					const randomEmoji = REACTION_EMOJIS[Math.floor(Math.random() * REACTION_EMOJIS.length)];
 					await message.react(randomEmoji);
@@ -371,7 +371,7 @@ module.exports = {
 			console.error('[messageCreate] Error al generar respuesta de Jimbo:', error);
 			if (isDirectMention || isReplyToJimbo) {
 				await message.reply({
-					content: '¡Naguará, me dio un lagazo mental chamo! Intenta de nuevo en un segundo.',
+					content: 'Se fue la luz en el callejón del Limbo chamo, dame un segundo e intenta otra vez.',
 					allowedMentions: { repliedUser: false },
 				});
 			}

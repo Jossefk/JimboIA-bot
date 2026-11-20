@@ -8,7 +8,7 @@ module.exports = {
 	// Este evento solo se ejecuta una vez
 	once: true,
 	async execute(client) {
-		console.log(`¡Listo! Conectado como ${client.user.tag}`);
+		console.log(`¡Listo! Puesto del Limbo abierto como ${client.user.tag}`);
 		startReminderTicker(client);
 
 		if (!client.hasPrivilegedIntents) return;

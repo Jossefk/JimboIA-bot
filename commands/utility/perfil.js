@@ -4,7 +4,7 @@ const db = require('../../database/db.js');
 module.exports = {
 	data: new SlashCommandBuilder()
 		.setName('perfil')
-		.setDescription('Consulta tu perfil balatriano, saldo de fichas y recuerdos que Jimbo tiene de ti.')
+		.setDescription('Consulta tu expediente del Limbo, saldo de fichas, mochila y recuerdos de Jimbo.')
 		.addUserOption(option =>
 			option
 				.setName('usuario')
@@ -23,6 +23,8 @@ module.exports = {
 
 		const userRecord = db.getOrCreateUser(targetUser.id, targetUser.username, displayName, interaction.guildId);
 		const memories = db.getUserMemories(targetUser.id, 6);
+		const inventory = db.getUserInventory(targetUser.id, 6);
+		const activeContract = db.getActiveContract(targetUser.id);
 
 		let affinityStatus = 'Neutral (aún se están conociendo)';
 		if (userRecord.affinity >= 30) {
@@ -63,15 +65,27 @@ module.exports = {
 			fields.push({ name: '📝 Resumen de Perfil', value: userRecord.personality_notes.trim() });
 		}
 
+		if (inventory.length > 0) {
+			const invSummary = inventory.map(i => `• ${i.item_name} (x${i.quantity})`).join('\n');
+			fields.push({ name: '🎒 Mochila del Limbo', value: invSummary });
+		}
+
+		if (activeContract) {
+			fields.push({
+				name: '📜 Contrato Activo',
+				value: `${activeContract.contract_text} _(Recompensa: ${activeContract.reward_chips} 🪙)_`,
+			});
+		}
+
 		fields.push({ name: '🧠 Lo que Jimbo recuerda de ti', value: memoriesList });
 
 		const embed = new EmbedBuilder()
-			.setColor(0x0099FF)
-			.setAuthor({ name: `Perfil de ${displayName}`, iconURL: targetUser.displayAvatarURL() })
-			.setTitle('👤 Perfil y Memoria de Usuario')
+			.setColor(0x2B2D31)
+			.setAuthor({ name: `Expediente de ${displayName}`, iconURL: targetUser.displayAvatarURL() })
+			.setTitle('🕯️ Expediente de Viajero del Limbo')
 			.addFields(fields)
 			.setTimestamp()
-			.setFooter({ text: 'Usa /memoria ver para consultar todos los recuerdos con ID.' });
+			.setFooter({ text: 'Usa /memoria ver para IDs o /tienda ver para mercancía.' });
 
 		await interaction.reply({ embeds: [embed] });
 	},

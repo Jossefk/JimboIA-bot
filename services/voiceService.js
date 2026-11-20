@@ -131,7 +131,7 @@ async function joinVoice(voiceChannel) {
 
 		// Saludo inicial de Jimbo en el canal de voz
 		setTimeout(() => {
-			speakText(guildId, '¡Qué pasó panas! Ya llegué al voice, ¿qué se cuenta por acá?');
+			speakText(guildId, 'Epa panas, ya abrí el puesto en el voice, ¿quién necesita una poción chimba o qué se cuenta?');
 		}, 1000);
 	}
 	catch (err) {
@@ -226,9 +226,9 @@ function setupVoiceReceiver(connData, voiceChannel) {
 				const wavBuffer = pcmToWav(pcmBuffer, 48000, 2, 16);
 				const base64Audio = wavBuffer.toString('base64');
 
-				const voicePrompt = `Eres Jimbo en un canal de voz de Discord. El usuario "${speakerName}" te acaba de hablar por micrófono.
-Escucha atentamente el audio adjunto y respóndele de forma muy concisa (1 oración corta, máximo 20 palabras) con tu estilo venezolano, bromista y directo para que se escuche natural por voz.
-Prohibido meter referencias forzadas a cartas o Balatro.`;
+				const voicePrompt = `Eres Jimbo, el mercader clandestino del Limbo (vendedor de empanadas y pociones chimbas), hablando en un canal de voz de Discord con "${speakerName}".
+Escucha el audio adjunto y respóndele muy conciso (1 oración corta, máximo 20 palabras) con tu estilo venezolano cínico, callejero y con un toque sutil de dealer misterioso para que suene natural por voz.
+Prohibido meter referencias a cartas o Balatro.`;
 
 				const res = await callGemini(aiClient =>
 					aiClient.models.generateContent({

@@ -78,6 +78,35 @@ CREATE TABLE IF NOT EXISTS channel_episodes (
 CREATE INDEX IF NOT EXISTS idx_channel_episodes_channel
 ON channel_episodes(channel_id, id DESC);
 
+CREATE TABLE IF NOT EXISTS user_inventory (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	user_id TEXT NOT NULL,
+	item_key TEXT NOT NULL,
+	item_name TEXT NOT NULL,
+	item_effect TEXT DEFAULT '',
+	quantity INTEGER DEFAULT 1,
+	acquired_at TEXT DEFAULT (datetime('now')),
+	FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_inventory_unique
+ON user_inventory(user_id, item_key);
+
+CREATE TABLE IF NOT EXISTS daily_contracts (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	user_id TEXT NOT NULL,
+	guild_id TEXT,
+	contract_text TEXT NOT NULL,
+	reward_chips INTEGER DEFAULT 100,
+	status TEXT DEFAULT 'active',
+	created_at TEXT DEFAULT (datetime('now')),
+	completed_at TEXT DEFAULT NULL,
+	FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_contracts_user
+ON daily_contracts(user_id, status, id DESC);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
 	content,
 	category,
@@ -149,6 +178,55 @@ if (!memoryColumns.includes('last_accessed_at')) {
 
 // Prepared statements reutilizables
 const stmtGetUser = db.prepare('SELECT * FROM users WHERE user_id = ?');
+const stmtUpsertInventoryItem = db.prepare(`
+	INSERT INTO user_inventory (user_id, item_key, item_name, item_effect, quantity)
+	VALUES (?, ?, ?, ?, ?)
+	ON CONFLICT(user_id, item_key) DO UPDATE SET
+		quantity = quantity + excluded.quantity,
+		item_name = excluded.item_name,
+		item_effect = excluded.item_effect,
+		acquired_at = datetime('now')
+`);
+const stmtGetInventoryItem = db.prepare(`
+	SELECT * FROM user_inventory
+	WHERE user_id = ? AND item_key = ?
+`);
+const stmtGetUserInventory = db.prepare(`
+	SELECT item_key, item_name, item_effect, quantity, acquired_at
+	FROM user_inventory
+	WHERE user_id = ? AND quantity > 0
+	ORDER BY acquired_at DESC
+	LIMIT ?
+`);
+const stmtDecrementInventoryItem = db.prepare(`
+	UPDATE user_inventory
+	SET quantity = quantity - 1
+	WHERE user_id = ? AND item_key = ?
+`);
+const stmtDeleteInventoryItem = db.prepare(`
+	DELETE FROM user_inventory
+	WHERE user_id = ? AND item_key = ?
+`);
+const stmtGetActiveContract = db.prepare(`
+	SELECT * FROM daily_contracts
+	WHERE user_id = ? AND status = 'active'
+	ORDER BY id DESC
+	LIMIT 1
+`);
+const stmtGetTodayCompletedContract = db.prepare(`
+	SELECT id FROM daily_contracts
+	WHERE user_id = ? AND status = 'completed' AND date(completed_at) = date('now')
+	LIMIT 1
+`);
+const stmtCreateDailyContract = db.prepare(`
+	INSERT INTO daily_contracts (user_id, guild_id, contract_text, reward_chips, status)
+	VALUES (?, ?, ?, ?, 'active')
+`);
+const stmtCompleteDailyContract = db.prepare(`
+	UPDATE daily_contracts
+	SET status = 'completed', completed_at = datetime('now')
+	WHERE id = ?
+`);
 const stmtInsertUser = db.prepare(`
 	INSERT INTO users (user_id, username, display_name, chips, affinity, last_guild_id, last_seen_at)
 	VALUES (?, ?, ?, 1000, 0, ?, datetime('now'))
@@ -965,6 +1043,96 @@ function deleteAllUserMemories(userId) {
 	return Number(res.changes);
 }
 
+/**
+ * Añade un ítem de la tienda del Limbo a la mochila del usuario
+ */
+function addInventoryItem(userId, itemKey, itemName, itemEffect = '', qty = 1) {
+	if (!userId || !itemKey || !itemName) return null;
+	const cleanQty = Math.max(1, Number(qty) || 1);
+	stmtUpsertInventoryItem.run(userId, itemKey, itemName, itemEffect || '', cleanQty);
+	return stmtGetInventoryItem.get(userId, itemKey) || null;
+}
+
+/**
+ * Obtiene los ítems activos en la mochila de un usuario
+ */
+function getUserInventory(userId, limit = 15) {
+	if (!userId) return [];
+	return stmtGetUserInventory.all(userId, limit);
+}
+
+/**
+ * Consume una unidad de un ítem de la mochila del usuario
+ */
+function consumeInventoryItem(userId, itemKey) {
+	if (!userId || !itemKey) return null;
+	const item = stmtGetInventoryItem.get(userId, itemKey);
+	if (!item || item.quantity <= 0) return null;
+
+	if (item.quantity <= 1) {
+		stmtDeleteInventoryItem.run(userId, itemKey);
+	}
+	else {
+		stmtDecrementInventoryItem.run(userId, itemKey);
+	}
+
+	return {
+		...item,
+		remaining: Math.max(0, item.quantity - 1),
+	};
+}
+
+/**
+ * Obtiene el contrato diario activo de un usuario
+ */
+function getActiveContract(userId) {
+	if (!userId) return null;
+	return stmtGetActiveContract.get(userId) || null;
+}
+
+/**
+ * Crea un contrato diario en el Limbo si el usuario no tiene uno activo ni completado hoy
+ */
+function createDailyContract(userId, guildId, contractText, rewardChips = 100) {
+	if (!userId) return { status: 'error' };
+	const active = getActiveContract(userId);
+	if (active) {
+		return { status: 'already_active', contract: active };
+	}
+
+	const completedToday = stmtGetTodayCompletedContract.get(userId);
+	if (completedToday) {
+		return { status: 'cooldown' };
+	}
+
+	const reward = Math.min(200, Math.max(40, Math.round(Number(rewardChips) || 100)));
+	const res = stmtCreateDailyContract.run(userId, guildId || null, String(contractText || '').trim().slice(0, 220), reward);
+	const contract = db.prepare('SELECT * FROM daily_contracts WHERE id = ?').get(Number(res.lastInsertRowid));
+	return { status: 'created', contract };
+}
+
+/**
+ * Marca como completado el contrato activo del usuario y entrega fichas
+ */
+function completeDailyContract(userId) {
+	if (!userId) return { status: 'no_active_contract' };
+	const active = getActiveContract(userId);
+	if (!active) {
+		return { status: 'no_active_contract' };
+	}
+
+	stmtCompleteDailyContract.run(active.id);
+	const newBalance = addChips(userId, active.reward_chips);
+	adjustAffinity(userId, 1);
+
+	return {
+		status: 'completed',
+		contract: active,
+		reward: active.reward_chips,
+		newBalance,
+	};
+}
+
 module.exports = {
 	db,
 	getOrCreateUser,
@@ -998,4 +1166,10 @@ module.exports = {
 	encodeEmbedding,
 	decodeEmbedding,
 	cosineSimilarity,
+	addInventoryItem,
+	getUserInventory,
+	consumeInventoryItem,
+	getActiveContract,
+	createDailyContract,
+	completeDailyContract,
 };

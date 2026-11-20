@@ -43,7 +43,7 @@ module.exports = {
 			const memberVoice = interaction.member?.voice?.channel;
 			if (!memberVoice) {
 				return interaction.reply({
-					content: '🃏 ¡Epa chamo! Tienes que estar metido en un canal de voz para que me pueda unir contigo.',
+					content: '🕯️ ¡Epa chamo! Tienes que estar metido en un canal de voz para que me pueda unir contigo.',
 					flags: 64,
 				});
 			}
@@ -51,29 +51,29 @@ module.exports = {
 			await interaction.deferReply();
 			try {
 				await joinVoice(memberVoice);
-				return interaction.editReply(`🃏 ¡Listo mi pana! Me uní al canal de voz **${memberVoice.name}**. ¡Háblame por micrófono o pídeme que diga algo!`);
+				return interaction.editReply(`🕯️ ¡Listo mi pana! Me metí al canal de voz **${memberVoice.name}**. ¡Háblame por micrófono o pídeme que diga algo!`);
 			}
 			catch (err) {
 				console.error('[COMMAND VOZ] Error al unirse:', err);
-				return interaction.editReply('🃏 ¡Naguará, no me pude conectar al canal de voz! Revisa si tengo permisos para unirme y hablar.');
+				return interaction.editReply('🕯️ ¡Naguará, no me pude conectar al canal de voz! Revisa si tengo permisos para unirme y hablar.');
 			}
 		}
 
 		if (subcommand === 'salir') {
 			const conn = getVoiceConnection(guild.id);
 			if (!conn) {
-				return interaction.reply({ content: '🃏 Si ni siquiera estoy metido en ningún canal de voz, chamo.', flags: 64 });
+				return interaction.reply({ content: '🕯️ Si ni siquiera estoy metido en ningún canal de voz, chamo.', flags: 64 });
 			}
 
 			leaveVoice(guild.id);
-			return interaction.reply('🃏 ¡Hablamos luego panas! Me salí del canal de voz a seguir contando cartas.');
+			return interaction.reply('🕯️ ¡Hablamos luego panas! Me salí del canal de voz a atender el puesto de empanadas en el Limbo.');
 		}
 
 		if (subcommand === 'hablar') {
 			const conn = getVoiceConnection(guild.id);
 			if (!conn) {
 				return interaction.reply({
-					content: '🃏 Primero tienes que unirme a un canal de voz con `/voz unirse` para que pueda hablar.',
+					content: '🕯️ Primero tienes que unirme a un canal de voz con `/voz unirse` para que pueda hablar.',
 					flags: 64,
 				});
 			}
@@ -86,7 +86,7 @@ module.exports = {
 				return interaction.editReply(`🔊 Diciendo en el voice: *"${text}"*`);
 			}
 			else {
-				return interaction.editReply('🃏 Se me trabó la lengua balatreando ese texto, intenta otra vez.');
+				return interaction.editReply('🕯️ Se me fue la luz en el callejón intentando decir eso, intenta otra vez.');
 			}
 		}
 	},

@@ -23,10 +23,10 @@ module.exports = {
 			catch (error) {
 				console.error(error);
 				if (interaction.replied || interaction.deferred) {
-					await interaction.followUp({ content: 'Hubo un error balatreando este comando.', flags: 64 });
+					await interaction.followUp({ content: 'Hubo un corto en el callejón procesando ese comando.', flags: 64 });
 				}
 				else {
-					await interaction.reply({ content: 'Hubo un error balatreando este comando.', flags: 64 });
+					await interaction.reply({ content: 'Hubo un corto en el callejón procesando ese comando.', flags: 64 });
 				}
 			}
 			return;
@@ -79,11 +79,11 @@ module.exports = {
 
 				// Si no, actualizamos el embed con la nueva mano del jugador
 				const embed = new EmbedBuilder()
-					.setColor(0x0099FF)
-					.setTitle('♠️ Partida de Blackjack Balatriana ♦️')
+					.setColor(0x2B2D31)
+					.setTitle('🕯️ Mesa Clandestina de Blackjack')
 					.setDescription(`💰 **Apuesta en juego:** ${bet} fichas`)
 					.addFields(
-						{ name: '🃏 Mano de Jimbo', value: getHandString(game.dealerHand, true), inline: true },
+						{ name: '🕯️ Mano de Jimbo', value: getHandString(game.dealerHand, true), inline: true },
 						{ name: `🎴 Tu Mano (${game.playerValue})`, value: getHandString(game.playerHand), inline: true },
 					)
 					.setFooter({ text: `Turno de ${interaction.user.displayName}` });
@@ -106,13 +106,13 @@ module.exports = {
 				let won = false;
 
 				if (dealerValue > 21 || playerValue > dealerValue) {
-					resultMessage = '🎉 ¡Balatraciones, has ganado!';
+					resultMessage = '🎉 ¡Coronaste la mano!';
 					color = 0x00FF00;
 					deltaChips = bet;
 					won = true;
 				}
 				else if (playerValue < dealerValue) {
-					resultMessage = '💀 ¡Jimbo Gana, no le sabes al Balatreo!';
+					resultMessage = '💀 ¡La casa del Limbo siempre cobra!';
 					color = 0xFF0000;
 					deltaChips = -bet;
 					won = false;
@@ -149,7 +149,7 @@ module.exports = {
 					.setTitle(resultMessage)
 					.setDescription(`${chipsFeedback}\nSaldo actual: **${updatedUser.chips} fichas**.`)
 					.addFields(
-						{ name: `🃏 Mano de Jimbo (${dealerValue})`, value: getHandString(game.dealerHand), inline: true },
+						{ name: `🕯️ Mano de Jimbo (${dealerValue})`, value: getHandString(game.dealerHand), inline: true },
 						{ name: `🎴 Tu Mano (${playerValue})`, value: getHandString(game.playerHand), inline: true },
 					)
 					.setFooter({ text: `Afinidad con Jimbo: ${updatedUser.affinity}` });

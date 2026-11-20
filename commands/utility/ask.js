@@ -39,12 +39,12 @@ module.exports = {
 			});
 
 			const responseEmbed = new EmbedBuilder()
-				.setColor(0x0099FF)
+				.setColor(0x2B2D31)
 				.setAuthor({
 					name: `Pregunta de ${displayName}`,
 					iconURL: interaction.user.displayAvatarURL(),
 				})
-				.setTitle('💬 Respuesta de Jimbo:')
+				.setTitle('🕯️ Jimbo desde el callejón:')
 				.addFields({ name: 'Tu pregunta:', value: pregunta.length > 250 ? pregunta.substring(0, 247) + '...' : pregunta })
 				.setDescription(replyText.length > 4000 ? replyText.substring(0, 3995) + '...' : replyText)
 				.setTimestamp()

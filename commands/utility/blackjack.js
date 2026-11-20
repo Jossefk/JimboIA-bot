@@ -29,14 +29,14 @@ module.exports = {
 			db.addChips(userId, 100);
 			db.addMemory(userId, interaction.guildId, 'deuda', 'Jimbo le dio un préstamo de cortesía de 100 fichas porque quedó en la ruina', 2);
 			user = db.getOrCreateUser(userId, interaction.user.username, displayName);
-			await interaction.channel.send(`💸 **¡Auxilio de la Casa!** Jimbo vio que <@${userId}> estaba pelando bolas con 0 fichas y le prestó **100 fichas de cortesía** para que siga balatreando.`);
+			await interaction.channel.send(`💸 **¡Auxilio del Callejón!** Jimbo vio que <@${userId}> estaba pelando bolas y le fió **100 fichas** para que siga apostando en el Limbo.`);
 		}
 
 		// Determinar monto de apuesta
 		const inputBet = interaction.options.getInteger('apuesta') || 50;
 		if (inputBet > user.chips) {
 			return interaction.reply({
-				content: `🃏 ¡Epa loco! Estás apostando **${inputBet} fichas** pero solo tienes **${user.chips} fichas**. Ajusta la apuesta o no hay trato.`,
+				content: `🕯️ ¡Epa loco! Estás apostando **${inputBet} fichas** pero solo tienes **${user.chips} fichas**. Ajusta la apuesta o no hay trato.`,
 				flags: 64,
 			});
 		}
@@ -69,14 +69,14 @@ module.exports = {
 		// --- Crear la Interfaz en Discord ---
 		const createGameEmbed = () => {
 			return new EmbedBuilder()
-				.setColor(0x0099FF)
-				.setTitle('♠️ Partida de Blackjack Balatriana ♦️')
+				.setColor(0x2B2D31)
+				.setTitle('🕯️ Mesa Clandestina de Blackjack')
 				.setDescription(`💰 **Apuesta en juego:** ${bet} fichas (Saldo: ${user.chips} fichas)`)
 				.addFields(
-					{ name: '🃏 Mano de Jimbo', value: getHandString(dealerHand, true), inline: true },
+					{ name: '🕯️ Mano de Jimbo', value: getHandString(dealerHand, true), inline: true },
 					{ name: `🎴 Tu Mano (${getHandValue(playerHand)})`, value: getHandString(playerHand), inline: true },
 				)
-				.setFooter({ text: `Turno de ${displayName} | ¡A balatrear!` });
+				.setFooter({ text: `Turno de ${displayName} | Sin mirar debajo de la mesa` });
 		};
 
 		const buttons = new ActionRowBuilder()

@@ -4,7 +4,7 @@ const db = require('../../database/db.js');
 module.exports = {
 	data: new SlashCommandBuilder()
 		.setName('ranking')
-		.setDescription('Muestra el top de jugadores con más fichas del casino balatriano.'),
+		.setDescription('Muestra el top de panas con más fichas en el callejón del Limbo.'),
 
 	/**
 	 * @param {import("discord.js").Client<true>} client
@@ -14,7 +14,7 @@ module.exports = {
 		const topUsers = db.getLeaderboard(10);
 
 		if (topUsers.length === 0) {
-			return interaction.reply({ content: 'Aún no hay jugadores registrados en el casino.', flags: 64 });
+			return interaction.reply({ content: 'Aún no hay viajeros con fichas registradas en el callejón.', flags: 64 });
 		}
 
 		const medals = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
@@ -28,10 +28,10 @@ module.exports = {
 
 		const embed = new EmbedBuilder()
 			.setColor(0xFEE75C)
-			.setTitle('🏆 Salón de la Fama Balatriana')
+			.setTitle('🕯️ Ranking de Fichas del Limbo')
 			.setDescription(leaderboardText)
 			.setTimestamp()
-			.setFooter({ text: '¿Quién será el verdadero amo del Balatreo?' });
+			.setFooter({ text: 'Mercancía fiada no existe en este callejón.' });
 
 		await interaction.reply({ embeds: [embed] });
 	},
