@@ -195,7 +195,14 @@ function resolvePersonByQuery(query, guildId, guild = null) {
 /**
  * Ejecuta una llamada a herramienta retornada por Gemini
  */
-async function executeToolCall({ name, args }, { userId, channelId, guildId, guild = null }) {
+async function executeToolCall({ name, args }, {
+	userId,
+	channelId,
+	guildId,
+	guild = null,
+	isPrivate = false,
+	onMemorySaved = null,
+}) {
 	if (name === 'set_reminder') {
 		const text = args.reminder_text;
 		let triggerIso;
@@ -251,7 +258,12 @@ async function executeToolCall({ name, args }, { userId, channelId, guildId, gui
 	}
 
 	if (name === 'search_memory') {
-		const results = db.searchMemories(args.query, 5, { userId, guildId });
+		const results = db.searchMemories(args.query, 5, {
+			userId,
+			guildId,
+			channelId,
+			includePrivate: isPrivate,
+		});
 		return {
 			query: args.query,
 			results: results.map(r => ({
@@ -280,7 +292,17 @@ async function executeToolCall({ name, args }, { userId, channelId, guildId, gui
 			args.category || 'general',
 			args.content,
 			args.importance || 3,
+			{
+				channelId,
+				isPrivate,
+				confidence: 'high',
+			},
 		);
+		if (memoryId && typeof onMemorySaved === 'function') {
+			Promise.resolve(onMemorySaved(memoryId, args.content)).catch(() => {
+				// Silencioso en background
+			});
+		}
 		return {
 			status: 'success',
 			memory_id: memoryId,
@@ -299,7 +321,10 @@ async function executeToolCall({ name, args }, { userId, channelId, guildId, gui
 			};
 		}
 
-		const memories = db.getUserMemories(person.user_id, 10);
+		const memories = db.getUserMemories(person.user_id, 10, {
+			channelId,
+			includePrivate: isPrivate,
+		});
 		return {
 			found: true,
 			user_id: person.user_id,

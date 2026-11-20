@@ -23,15 +23,19 @@ module.exports = {
 
 		try {
 			const displayName = interaction.member?.displayName || interaction.user.displayName || interaction.user.username;
-			const user = db.getOrCreateUser(interaction.user.id, interaction.user.username, displayName);
+			const user = db.getOrCreateUser(interaction.user.id, interaction.user.username, displayName, interaction.guildId);
 
 			const replyText = await generateJimboResponse({
 				user,
 				guildName: interaction.guild?.name || 'Servidor',
 				channelName: interaction.channel?.name || 'canal',
+				channelId: interaction.channelId,
+				guildId: interaction.guildId,
+				guild: interaction.guild,
 				contextMessages: [],
 				userMessage: pregunta,
 				isSerious: false,
+				isPrivate: !interaction.guildId,
 			});
 
 			const responseEmbed = new EmbedBuilder()

@@ -1,5 +1,5 @@
 const { GoogleGenAI, HarmCategory, HarmBlockThreshold } = require('@google/genai');
-const { geminiAPIKey, geminiModel, geminiMemoryModel } = require('../config.js');
+const { geminiAPIKey, geminiModel, geminiMemoryModel, geminiEmbeddingModel } = require('../config.js');
 const db = require('../database/db.js');
 const { jimboFunctionDeclarations, executeToolCall } = require('./toolsService.js');
 
@@ -140,13 +140,81 @@ async function buildMediaParts(attachments = []) {
 }
 
 /**
+ * Formatea una fecha SQLite/ISO como tiempo relativo legible en español
+ */
+function formatRelativeTimeEs(sqliteDateStr) {
+	if (!sqliteDateStr || typeof sqliteDateStr !== 'string') return 'reciente';
+	const iso = sqliteDateStr.includes('T')
+		? sqliteDateStr
+		: `${sqliteDateStr.replace(' ', 'T')}Z`;
+	const ms = Date.parse(iso);
+	if (Number.isNaN(ms)) return 'reciente';
+
+	const diffHours = Math.max(0, (Date.now() - ms) / 3_600_000);
+	if (diffHours < 1) return 'hace un rato';
+	if (diffHours < 24) return `hace ${Math.floor(diffHours)} h`;
+	const diffDays = Math.floor(diffHours / 24);
+	if (diffDays === 1) return 'ayer';
+	if (diffDays < 14) return `hace ${diffDays} días`;
+	const diffWeeks = Math.floor(diffDays / 7);
+	if (diffDays < 60) return `hace ${diffWeeks} semanas`;
+	const diffMonths = Math.floor(diffDays / 30);
+	return `hace ${diffMonths} meses`;
+}
+
+/**
+ * Genera un vector embedding de 768 dimensiones para búsqueda semántica
+ */
+async function generateEmbedding(text, taskType = 'RETRIEVAL_DOCUMENT') {
+	const client = getGeminiClient();
+	if (!client || !text || typeof text !== 'string' || text.trim().length < 3) return null;
+
+	try {
+		const res = await client.models.embedContent({
+			model: geminiEmbeddingModel,
+			contents: text.trim().slice(0, 1500),
+			config: {
+				outputDimensionality: 768,
+				taskType,
+			},
+		});
+		return res.embeddings?.[0]?.values || null;
+	}
+	catch (err) {
+		console.warn('[EMBEDDING] No se pudo generar embedding:', err.message || err);
+		return null;
+	}
+}
+
+/**
+ * Genera y guarda el embedding de un recuerdo en segundo plano
+ */
+async function embedMemoryInBackground(memoryId, content) {
+	if (!memoryId || !content) return;
+	try {
+		const values = await generateEmbedding(content, 'RETRIEVAL_DOCUMENT');
+		if (values) {
+			db.setMemoryEmbedding(memoryId, values);
+		}
+	}
+	catch {
+		// Silencioso en background
+	}
+}
+
+/**
  * Construye el bloque de memoria formateado separando recuerdos del usuario actual y de otros miembros
  */
-function buildMemoryContext(user, userMessage, guildId) {
-	const userMemories = db.getUserMemories(user.user_id, 6);
-	const contextualMemories = db.searchMemories(userMessage || '', 4, {
+function buildMemoryContext(user, userMessage, { guildId = null, channelId = null, isPrivate = false, queryEmbedding = null } = {}) {
+	const userMemories = db.getUserMemories(user.user_id, 6, {
+		channelId,
+		includePrivate: isPrivate,
+	});
+	const contextualMemories = db.searchMemoriesHybrid(userMessage || '', queryEmbedding, 4, {
 		userId: user.user_id,
 		guildId,
+		channelId,
+		includePrivate: isPrivate,
 	});
 
 	const ownMemories = [...userMemories];
@@ -176,7 +244,7 @@ function buildMemoryContext(user, userMessage, guildId) {
 	if (ownMemories.length > 0) {
 		lines.push('- Recuerdos sobre este usuario:');
 		for (const m of ownMemories) {
-			lines.push(`  • [${m.category}] ${m.content}`);
+			lines.push(`  • [${m.category}] (${formatRelativeTimeEs(m.created_at)}) ${m.content}`);
 		}
 	}
 	else {
@@ -187,7 +255,7 @@ function buildMemoryContext(user, userMessage, guildId) {
 		lines.push('- Recuerdos relacionados de otros miembros del servidor:');
 		for (const m of otherMemories) {
 			const ownerName = m.display_name || m.username || 'Servidor';
-			lines.push(`  • [De ${ownerName} - ${m.category}] ${m.content}`);
+			lines.push(`  • [De ${ownerName} - ${m.category}] (${formatRelativeTimeEs(m.created_at)}) ${m.content}`);
 		}
 	}
 
@@ -211,14 +279,28 @@ async function generateJimboResponse({
 	attachments = [],
 	isSerious = false,
 	isSpontaneous = false,
+	isPrivate = false,
 }) {
 	if (!getGeminiClient()) {
 		return '¡Epa! No tengo configurada mi `GEMINI_API_KEY` en el archivo `.env`. Pídele al administrador que la configure.';
 	}
 
-	const memoriesBlock = buildMemoryContext(user, userMessage, guildId);
+	const queryEmbedding = (userMessage && userMessage.trim().length >= 6)
+		? await generateEmbedding(userMessage, 'RETRIEVAL_QUERY')
+		: null;
+
+	const memoriesBlock = buildMemoryContext(user, userMessage, {
+		guildId,
+		channelId,
+		isPrivate,
+		queryEmbedding,
+	});
 	const rosterSection = guildRosterText && guildRosterText.trim()
 		? `\n[Personas del servidor]:\n${guildRosterText.trim()}\n`
+		: '';
+	const recentEpisodes = channelId ? db.getRecentChannelEpisodes(channelId, 3) : [];
+	const episodesSection = recentEpisodes.length > 0
+		? `\n[Conversaciones previas recientes en este canal]:\n${recentEpisodes.map(ep => `- (${formatRelativeTimeEs(ep.created_at)}) ${ep.summary}`).join('\n')}\n`
 		: '';
 
 	// Formatear contexto reciente del chat
@@ -246,11 +328,12 @@ Contexto:
 - Usuario: ${userName} (@${user.username})
 - Servidor: "${guildName || 'Discord'}", canal: "#${channelName || 'general'}"
 - Fecha y hora UTC actual: ${nowIso}
-${memoriesBlock}${rosterSection}
+${memoriesBlock}${episodesSection}${rosterSection}
 Reglas:
 1. Ve directo al grano y responde exactamente lo que te preguntan o analiza la imagen/audio adjunto con precisión.
 2. Mantén la respuesta concisa y bien estructurada.
-3. Si preguntan por miembros del servidor o personas conectadas, usa la lista [Personas del servidor] o la herramienta get_person_profile.`
+3. Si preguntan por miembros del servidor o personas conectadas, usa la lista [Personas del servidor] o la herramienta get_person_profile.
+4. ANTI-ALUCINACIÓN Y HONESTIDAD: Si te preguntan por algo del pasado, un chisme o un dato de alguien que NO aparece en tus recuerdos ni en el historial del canal, di naturalmente que no te acuerdas o que no sabes; NUNCA inventes hechos ni recuerdos falsos.`
 		: `Eres Jimbo, un pana venezolano más en este servidor de Discord: gamer, otaku, sarcástico y callejero.
 Sabes de videojuegos, anime, tecnología, programación, memes y cultura general. Tienes humor negro, te gusta el chalequeo criollo inteligente y hablas sin filtros ni sermones moralistas.
 
@@ -259,7 +342,7 @@ Contexto social:
 - Afinidad contigo (-100 a +100): ${user.affinity} (${toneGuidance})
 - Servidor: "${guildName || 'Discord'}", canal: "#${channelName || 'general'}"
 - Fecha y hora UTC actual: ${nowIso}
-${memoriesBlock}${rosterSection}
+${memoriesBlock}${episodesSection}${rosterSection}
 REGLAS ESTRICTAS DE ESTILO Y BREVEDAD (OBLIGATORIO):
 1. MENSAJES CORTOS: Escribe como una persona real en un chat de Discord. Responde en 1 a 2 oraciones cortas (máximo 25 a 45 palabras, un solo párrafo breve).${isSpontaneous ? ' Como estás metiendo la cuchara espontáneamente en la conversación, responde en UNA sola línea corta y rápida (máximo 15-20 palabras).' : ''} Solo extiéndete si te piden explícitamente una explicación larga, código o un resumen.
 2. CERO SPAM DE BALATRO: Aunque tu avatar viene de Balatro, NO eres monotemático. PROHIBIDO meter referencias a cartas, comodines, apuestas, fichas, casino o decir "balatrear" en conversaciones normales. Solo habla de Balatro o fichas si el usuario saca ese tema explícitamente.
@@ -267,7 +350,8 @@ REGLAS ESTRICTAS DE ESTILO Y BREVEDAD (OBLIGATORIO):
 4. IDENTIDAD Y DIRECTORIO DEL GRUPO: Si te preguntan quiénes están en el chat/servidor o por algún miembro, usa la lista [Personas del servidor] (respetando quién está en línea o desconectado si aparece) o llama a get_person_profile para ver sus recuerdos completos.
 5. MEMORIA ORGÁNICA: Si tienes recuerdos del usuario, úsalos solo cuando vengan al caso de forma natural, nunca los recites como lista. Si alguien dice su nombre real, apodo o pide recordar algo sobre sí mismo u otro pana, usa update_person_profile o save_memory.
 6. IMÁGENES Y AUDIOS: Si hay una imagen/foto adjunta, mira bien qué aparece (incluyendo cualquier texto escrito en la imagen, meme o captura) y comenta directamente lo que ves. Si es un audio o nota de voz, responde directo a lo que dijeron.
-7. CERO TONO DE BOT: Nunca digas "¡Hola! ¿En qué puedo ayudarte?", "Como IA", ni uses emojis de cartas (🃏, 🎰). Usa a lo sumo 1 emoji casual (💀, 🔥, 👀, 😭) o ninguno.`;
+7. CERO TONO DE BOT: Nunca digas "¡Hola! ¿En qué puedo ayudarte?", "Como IA", ni uses emojis de cartas (🃏, 🎰). Usa a lo sumo 1 emoji casual (💀, 🔥, 👀, 😭) o ninguno.
+8. ANTI-ALUCINACIÓN Y HONESTIDAD: Si te preguntan por algo del pasado, un chisme o un dato de alguien que NO aparece en tus recuerdos ni en el historial del canal, di naturalmente que no te acuerdas o que no sabes; NUNCA inventes hechos ni recuerdos falsos.`;
 
 	let promptText = '';
 	if (formattedContext.trim()) {
@@ -311,6 +395,8 @@ REGLAS ESTRICTAS DE ESTILO Y BREVEDAD (OBLIGATORIO):
 					channelId: channelId || null,
 					guildId: guildId || null,
 					guild,
+					isPrivate,
+					onMemorySaved: (memoryId, content) => embedMemoryInBackground(memoryId, content),
 				});
 
 				functionResponseParts.push({
@@ -348,6 +434,8 @@ REGLAS ESTRICTAS DE ESTILO Y BREVEDAD (OBLIGATORIO):
 		extractAndSaveMemoryInBackground({
 			user,
 			guildId,
+			channelId,
+			isPrivate,
 			userMessage,
 			contextMessages: contextMessages.slice(-2),
 			referencedMessage,
@@ -369,6 +457,8 @@ REGLAS ESTRICTAS DE ESTILO Y BREVEDAD (OBLIGATORIO):
 async function extractAndSaveMemoryInBackground({
 	user,
 	guildId,
+	channelId = null,
+	isPrivate = false,
 	userMessage,
 	contextMessages = [],
 	referencedMessage = null,
@@ -381,7 +471,7 @@ async function extractAndSaveMemoryInBackground({
 	if (/^(jaja+|jeje+|xd+|lol|ok|si|sí|no|epa|hola|buenas)$/i.test(cleanMsg)) return;
 
 	try {
-		const existingMemories = db.getUserMemories(user.user_id, 15);
+		const existingMemories = db.getUserMemories(user.user_id, 15, { includePrivate: true });
 		const existingListText = existingMemories.length > 0
 			? existingMemories.map(m => `ID ${m.id} [${m.category}] (imp:${m.importance}): ${m.content}`).join('\n')
 			: 'Ninguno todavía.';
@@ -410,17 +500,19 @@ ${existingListText}
 
 Instrucciones:
 1. Determina si el usuario reveló un dato personal duradero (nombre real, apodos, gustos, juegos, anime, trabajo, estudios, país/ciudad, proyectos, pareja/familia, anécdotas o preferencias) o si corrigió/actualizó un recuerdo existente.
-2. NO guardes saludos, preguntas genéricas, chistes de un segundo ni duplicados de lo que ya está en "Recuerdos ya guardados".
-3. Si el dato actualiza o corrige un recuerdo existente de la lista, usa "action": "update" e indica su "target_memory_id".
-4. Si el usuario pide olvidar algo que está en la lista o dice que ya no es cierto, usa "action": "delete" y su "target_memory_id".
-5. Si es un hecho nuevo que vale la pena recordar, usa "action": "add".
-6. Si no hay nada memorable nuevo, usa "action": "none".
-7. Si reveló o corrigió su nombre real, apodos o rasgos generales de su perfil, devuélvelos en "real_name", "aliases" o "personality_notes" (máx 120 caracteres). Si no requieren cambio, pon null.
+2. REGLA ANTI-SARCASMO: Discord está lleno de chalequeo, humor negro, troleo y exageraciones ("soy millonario", "vivo en Marte", "odio todo jaja"). Descarta chistes, ironías, hipérboles o roleplay. Clasifica "confidence" como "high" (dato claro y serio), "medium" (dato probable en contexto normal) o "low" (posible broma/sarcasmo/dudoso).
+3. NO guardes saludos, preguntas genéricas ni duplicados de lo que ya está en "Recuerdos ya guardados".
+4. Si el dato actualiza o corrige un recuerdo existente de la lista, usa "action": "update" e indica su "target_memory_id".
+5. Si el usuario pide olvidar algo que está en la lista o dice que ya no es cierto, usa "action": "delete" y su "target_memory_id".
+6. Si es un hecho nuevo que vale la pena recordar, usa "action": "add".
+7. Si no hay nada memorable nuevo, usa "action": "none".
+8. Si reveló o corrigió su nombre real, apodos o rasgos generales de su perfil, devuélvelos en "real_name", "aliases" o "personality_notes" (máx 120 caracteres). Si no requieren cambio, pon null.
 
 Responde ÚNICAMENTE con un JSON válido:
 {
   "action": "none" | "add" | "update" | "delete",
   "target_memory_id": numero o null,
+  "confidence": "high" | "medium" | "low",
   "category": "gusto" | "trabajo" | "anecdota" | "vida" | "anime" | "juego" | "general",
   "content": "hecho conciso en 3ra persona (ej: 'Estudia ingeniería y trabaja remoto') o null",
   "importance": numero del 1 al 5 (3 = normal, 4 = importante, 5 = dato clave como cumpleaños/profesión),
@@ -446,54 +538,77 @@ Responde ÚNICAMENTE con un JSON válido:
 
 		const parsed = JSON.parse(res.text.trim());
 		const action = parsed.action || (parsed.has_memory ? 'add' : 'none');
+		const confidence = (parsed.confidence || 'medium').toLowerCase();
 
-		if (action === 'add' && parsed.content) {
-			db.addMemory(
-				user.user_id,
-				guildId || null,
-				parsed.category || 'general',
-				parsed.content,
-				parsed.importance || 3,
-			);
-			console.log(`[MEMORIA +] ${user.username} | [${parsed.category || 'general'}]: ${parsed.content}`);
-		}
-		else if (action === 'update' && parsed.target_memory_id && parsed.content) {
-			const updated = db.updateMemory(Number(parsed.target_memory_id), {
-				category: parsed.category || 'general',
-				content: parsed.content,
-				importance: parsed.importance || 3,
-			});
-			if (!updated) {
-				db.addMemory(user.user_id, guildId || null, parsed.category || 'general', parsed.content, parsed.importance || 3);
+		if (confidence !== 'low') {
+			if (action === 'add' && parsed.content) {
+				const memoryId = db.addMemory(
+					user.user_id,
+					guildId || null,
+					parsed.category || 'general',
+					parsed.content,
+					parsed.importance || 3,
+					{
+						channelId: channelId || null,
+						isPrivate,
+						confidence,
+					},
+				);
+				if (memoryId) {
+					embedMemoryInBackground(memoryId, parsed.content).catch(() => {
+						// Silencioso en background
+					});
+				}
+				console.log(`[MEMORIA +] ${user.username} | [${parsed.category || 'general'}]: ${parsed.content}`);
 			}
-			console.log(`[MEMORIA ~] ${user.username} | ID ${parsed.target_memory_id}: ${parsed.content}`);
-		}
-		else if (action === 'delete' && parsed.target_memory_id) {
-			db.deleteMemory(Number(parsed.target_memory_id), user.user_id);
-			console.log(`[MEMORIA -] ${user.username} | ID ${parsed.target_memory_id} eliminado`);
-		}
+			else if (action === 'update' && parsed.target_memory_id && parsed.content) {
+				const targetId = Number(parsed.target_memory_id);
+				const updated = db.updateMemory(targetId, {
+					category: parsed.category || 'general',
+					content: parsed.content,
+					importance: parsed.importance || 3,
+				});
+				const finalId = updated
+					? targetId
+					: db.addMemory(user.user_id, guildId || null, parsed.category || 'general', parsed.content, parsed.importance || 3, {
+						channelId: channelId || null,
+						isPrivate,
+						confidence,
+					});
+				if (finalId) {
+					embedMemoryInBackground(finalId, parsed.content).catch(() => {
+						// Silencioso en background
+					});
+				}
+				console.log(`[MEMORIA ~] ${user.username} | ID ${targetId}: ${parsed.content}`);
+			}
+			else if (action === 'delete' && parsed.target_memory_id) {
+				db.deleteMemory(Number(parsed.target_memory_id), user.user_id);
+				console.log(`[MEMORIA -] ${user.username} | ID ${parsed.target_memory_id} eliminado`);
+			}
 
-		const profileUpdates = {};
-		if (parsed.real_name && typeof parsed.real_name === 'string') {
-			const val = parsed.real_name.trim();
-			if (val && val !== (user.real_name || '').trim()) {
-				profileUpdates.realName = val;
+			const profileUpdates = {};
+			if (parsed.real_name && typeof parsed.real_name === 'string') {
+				const val = parsed.real_name.trim();
+				if (val && val !== (user.real_name || '').trim()) {
+					profileUpdates.realName = val;
+				}
 			}
-		}
-		if (parsed.aliases && typeof parsed.aliases === 'string') {
-			const val = parsed.aliases.trim();
-			if (val && val !== (user.aliases || '').trim()) {
-				profileUpdates.aliases = val;
+			if (parsed.aliases && typeof parsed.aliases === 'string') {
+				const val = parsed.aliases.trim();
+				if (val && val !== (user.aliases || '').trim()) {
+					profileUpdates.aliases = val;
+				}
 			}
-		}
-		if (parsed.personality_notes && typeof parsed.personality_notes === 'string') {
-			const val = parsed.personality_notes.trim();
-			if (val && val !== (user.personality_notes || '').trim()) {
-				profileUpdates.personalityNotes = val;
+			if (parsed.personality_notes && typeof parsed.personality_notes === 'string') {
+				const val = parsed.personality_notes.trim();
+				if (val && val !== (user.personality_notes || '').trim()) {
+					profileUpdates.personalityNotes = val;
+				}
 			}
-		}
-		if (Object.keys(profileUpdates).length > 0) {
-			db.updateUserProfile(user.user_id, profileUpdates);
+			if (Object.keys(profileUpdates).length > 0) {
+				db.updateUserProfile(user.user_id, profileUpdates);
+			}
 		}
 
 		if (parsed.affinity_delta && Number(parsed.affinity_delta) !== 0) {
@@ -509,7 +624,7 @@ Responde ÚNICAMENTE con un JSON válido:
 /**
  * Analiza un lote de mensajes casuales en segundo plano para extraer datos personales sin responder al chat
  */
-async function extractBatchMemoriesInBackground({ guildId, messages = [] }) {
+async function extractBatchMemoriesInBackground({ guildId, channelId = null, isPrivate = false, messages = [] }) {
 	if (!getGeminiClient() || !Array.isArray(messages) || messages.length === 0) return;
 
 	const batchMessages = messages.slice(0, 10);
@@ -521,7 +636,10 @@ async function extractBatchMemoriesInBackground({ guildId, messages = [] }) {
 		for (const uid of validUserIds) {
 			const sample = batchMessages.find(m => m.userId === uid);
 			const dbUser = db.getOrCreateUser(uid, sample?.username || uid, sample?.displayName || sample?.username || uid, guildId);
-			const recentMems = db.getUserMemories(uid, 4).map(m => `[${m.category}] ${m.content}`).join('; ');
+			const recentMems = db.getUserMemories(uid, 4, {
+				channelId,
+				includePrivate: isPrivate,
+			}).map(m => `[${m.category}] ${m.content}`).join('; ');
 			profilesSummary.push(
 				`- user_id="${uid}" (${dbUser.display_name || dbUser.username}, real_name="${dbUser.real_name || ''}", aliases="${dbUser.aliases || ''}", notes="${dbUser.personality_notes || ''}")`
 				+ (recentMems ? ` | Recuerdos: ${recentMems}` : ''),
@@ -543,15 +661,17 @@ ${chatLog}
 
 Instrucciones:
 1. Extrae ÚNICAMENTE hechos duraderos y útiles que algún participante haya revelado (nombre real, apodos, trabajo, estudios, país/ciudad, proyectos, gustos claros, juegos o anime favoritos, anécdotas relevantes).
-2. Ignora charla trivial, saludos, risas, bromas pasajeras o datos que ya figuren en sus perfiles/recuerdos.
-3. Usa exactamente el "user_id" que aparece entre corchetes antes del nombre.
-4. Si nadie reveló nada nuevo que valga la pena recordar, devuelve {"updates": []}.
+2. REGLA ANTI-SARCASMO: Discord está lleno de chalequeo, humor negro, troleo y exageraciones ("soy millonario", "vivo en Marte"). Descarta chistes, ironías, hipérboles o roleplay. Clasifica "confidence" como "high", "medium" o "low" (si es broma/dudoso).
+3. Ignora charla trivial, saludos, risas o datos que ya figuren en sus perfiles/recuerdos.
+4. Usa exactamente el "user_id" que aparece entre corchetes antes del nombre.
+5. Si nadie reveló nada nuevo que valga la pena recordar, devuelve {"updates": []}.
 
 Responde ÚNICAMENTE con un JSON válido:
 {
   "updates": [
     {
       "user_id": "id exacto del usuario",
+      "confidence": "high" | "medium" | "low",
       "category": "gusto" | "trabajo" | "anecdota" | "vida" | "anime" | "juego" | "general",
       "content": "hecho conciso en 3ra persona o null",
       "importance": numero del 1 al 5,
@@ -581,6 +701,8 @@ Responde ÚNICAMENTE con un JSON válido:
 
 		for (const item of updates) {
 			if (!item || !validUserIds.has(item.user_id)) continue;
+			const confidence = (item.confidence || 'medium').toLowerCase();
+			if (confidence === 'low') continue;
 
 			const profileUpdates = {};
 			if (item.real_name && typeof item.real_name === 'string') {
@@ -597,19 +719,88 @@ Responde ÚNICAMENTE con un JSON válido:
 			}
 
 			if (item.content && typeof item.content === 'string' && item.content.trim()) {
-				db.addMemory(
+				const cleanContent = item.content.trim();
+				const memoryId = db.addMemory(
 					item.user_id,
 					guildId || null,
 					item.category || 'general',
-					item.content.trim(),
+					cleanContent,
 					item.importance || 3,
+					{
+						channelId: channelId || null,
+						isPrivate,
+						confidence,
+					},
 				);
-				console.log(`[MEMORIA LOTE] ${item.user_id} | [${item.category || 'general'}]: ${item.content.trim()}`);
+				if (memoryId) {
+					embedMemoryInBackground(memoryId, cleanContent).catch(() => {
+						// Silencioso en background
+					});
+				}
+				console.log(`[MEMORIA LOTE] ${item.user_id} | [${item.category || 'general'}]: ${cleanContent}`);
 			}
 		}
 	}
 	catch {
 		// Fallo silencioso en background sin interrumpir el chat
+	}
+}
+
+/**
+ * Condensa un bloque de mensajes de un canal en un resumen episódico corto en segundo plano
+ */
+async function summarizeChannelEpisodeInBackground({ guildId, channelId, messages = [] }) {
+	if (!getGeminiClient() || !channelId || !Array.isArray(messages) || messages.length < 10) return;
+
+	try {
+		const chatText = messages
+			.slice(-40)
+			.map(m => `${m.author}: ${m.content}`)
+			.join('\n');
+
+		const episodePrompt = `Resume este bloque de conversación de un canal de Discord en un episodio factual corto para la memoria a mediano plazo de Jimbo.
+
+Mensajes:
+${chatText}
+
+Instrucciones:
+1. Resume en 1 o 2 oraciones cortas (máx 220 caracteres) qué temas concretos se hablaron, decisiones o anécdotas reales del grupo.
+2. Ignora saludos vacíos, risas o spam; si no hubo ningún tema real, pon "summary": null.
+3. No inventes nada que no esté en los mensajes.
+
+Responde ÚNICAMENTE con JSON válido:
+{
+  "summary": "resumen conciso en español o null",
+  "participants": "nombres separados por coma"
+}`;
+
+		const res = await callGemini(client =>
+			client.models.generateContent({
+				model: geminiMemoryModel,
+				contents: [{ role: 'user', parts: [{ text: episodePrompt }] }],
+				config: {
+					responseMimeType: 'application/json',
+					temperature: 0.2,
+					safetySettings: zeroSafetySettings,
+				},
+			}),
+		);
+
+		if (!res.text) return;
+		const parsed = JSON.parse(res.text.trim());
+		if (parsed?.summary && typeof parsed.summary === 'string' && parsed.summary.trim()) {
+			db.addChannelEpisode(
+				guildId || null,
+				channelId,
+				parsed.summary.trim(),
+				parsed.participants || '',
+				messages.length,
+			);
+			console.log(`[EPISODIO] Canal ${channelId}: ${parsed.summary.trim()}`);
+		}
+	}
+	catch {
+		// Fallo silencioso en background
 	}
 }
 
@@ -646,6 +837,9 @@ ${chatHistory}
 module.exports = {
 	generateJimboResponse,
 	extractBatchMemoriesInBackground,
+	summarizeChannelEpisodeInBackground,
+	embedMemoryInBackground,
+	formatRelativeTimeEs,
 	generateChatSummary,
 	splitDiscordMessage,
 	buildMediaParts,

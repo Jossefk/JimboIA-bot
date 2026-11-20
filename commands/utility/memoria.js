@@ -1,5 +1,6 @@
 const { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } = require('discord.js');
 const db = require('../../database/db.js');
+const { embedMemoryInBackground } = require('../../services/geminiService.js');
 const { ownerId } = require('../../config.js');
 
 const DEFAULT_ALLOWED_OWNER = '217632647294222336';
@@ -169,10 +170,19 @@ module.exports = {
 				: null;
 			const displayName = member?.displayName || targetUser.displayName || targetUser.username;
 			const userRecord = db.getOrCreateUser(targetUser.id, targetUser.username, displayName, interaction.guildId);
-			const memories = db.getUserMemories(targetUser.id, 30);
+			const isRestrictedChannel = !interaction.guildId || (
+				interaction.guild?.roles?.everyone
+				&& typeof interaction.channel?.permissionsFor === 'function'
+				&& !interaction.channel.permissionsFor(interaction.guild.roles.everyone)?.has('ViewChannel')
+			);
+			const canShowPrivate = isRestrictedChannel || (isPrivate && (isAdminOrOwner(interaction) || targetUser.id === interaction.user.id));
+			const memories = db.getUserMemories(targetUser.id, 30, {
+				channelId: interaction.channelId,
+				includePrivate: canShowPrivate,
+			});
 
 			let memoriesText = memories.length > 0
-				? memories.map(m => `\`#${m.id}\` **[${m.category}]** *(imp:${m.importance})* — ${m.content}`).join('\n')
+				? memories.map(m => `${m.is_private ? '🔒 ' : ''}\`#${m.id}\` **[${m.category}]** *(imp:${m.importance})* — ${m.content}`).join('\n')
 				: '_No hay recuerdos registrados todavía para este usuario._';
 
 			if (memoriesText.length > 3900) {
@@ -244,7 +254,16 @@ module.exports = {
 			const displayName = member?.displayName || targetUser.displayName || targetUser.username;
 			db.getOrCreateUser(targetUser.id, targetUser.username, displayName, interaction.guildId);
 
-			const memoryId = db.addMemory(targetUser.id, interaction.guildId, categoria, dato, importancia);
+			const memoryId = db.addMemory(targetUser.id, interaction.guildId, categoria, dato, importancia, {
+				channelId: interaction.channelId,
+				isPrivate: false,
+				confidence: 'high',
+			});
+			if (memoryId) {
+				embedMemoryInBackground(memoryId, dato).catch(() => {
+					// Silencioso en background
+				});
+			}
 			return interaction.reply({
 				content: `✅ Recuerdo \`#${memoryId}\` guardado para **${displayName}** en [${categoria}]: ${dato}`,
 				flags: 64,

@@ -65,6 +65,19 @@ CREATE TABLE IF NOT EXISTS reminders (
 CREATE INDEX IF NOT EXISTS idx_reminders_pending 
 ON reminders(status, trigger_at);
 
+CREATE TABLE IF NOT EXISTS channel_episodes (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	guild_id TEXT,
+	channel_id TEXT NOT NULL,
+	summary TEXT NOT NULL,
+	participants TEXT DEFAULT '',
+	message_count INTEGER DEFAULT 0,
+	created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_channel_episodes_channel
+ON channel_episodes(channel_id, id DESC);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
 	content,
 	category,
@@ -111,6 +124,27 @@ if (!userColumns.includes('last_guild_id')) {
 }
 if (!userColumns.includes('last_seen_at')) {
 	db.exec('ALTER TABLE users ADD COLUMN last_seen_at TEXT DEFAULT NULL;');
+}
+
+// Migración idempotente de columnas avanzadas en memories
+const memoryColumns = db.prepare('PRAGMA table_info(memories)').all().map(c => c.name);
+if (!memoryColumns.includes('embedding')) {
+	db.exec('ALTER TABLE memories ADD COLUMN embedding BLOB DEFAULT NULL;');
+}
+if (!memoryColumns.includes('channel_id')) {
+	db.exec('ALTER TABLE memories ADD COLUMN channel_id TEXT DEFAULT NULL;');
+}
+if (!memoryColumns.includes('is_private')) {
+	db.exec('ALTER TABLE memories ADD COLUMN is_private INTEGER DEFAULT 0;');
+}
+if (!memoryColumns.includes('confidence')) {
+	db.exec('ALTER TABLE memories ADD COLUMN confidence TEXT DEFAULT \'medium\';');
+}
+if (!memoryColumns.includes('access_count')) {
+	db.exec('ALTER TABLE memories ADD COLUMN access_count INTEGER DEFAULT 0;');
+}
+if (!memoryColumns.includes('last_accessed_at')) {
+	db.exec('ALTER TABLE memories ADD COLUMN last_accessed_at TEXT DEFAULT NULL;');
 }
 
 // Prepared statements reutilizables
@@ -186,12 +220,28 @@ const stmtRecordGame = db.prepare(`
 	WHERE user_id = ?
 `);
 const stmtAddMemory = db.prepare(`
-	INSERT INTO memories (user_id, guild_id, category, content, importance)
-	VALUES (?, ?, ?, ?, ?)
+	INSERT INTO memories (user_id, guild_id, category, content, importance, channel_id, is_private, confidence)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `);
 const stmtUpdateMemory = db.prepare(`
 	UPDATE memories
 	SET category = ?, content = ?, importance = ?, created_at = datetime('now')
+	WHERE id = ?
+`);
+const stmtUpdateMemoryDedupe = db.prepare(`
+	UPDATE memories
+	SET category = ?, content = ?, importance = ?, is_private = ?, confidence = ?, created_at = datetime('now')
+	WHERE id = ?
+`);
+const stmtSetMemoryEmbedding = db.prepare(`
+	UPDATE memories
+	SET embedding = ?
+	WHERE id = ?
+`);
+const stmtTouchMemory = db.prepare(`
+	UPDATE memories
+	SET access_count = COALESCE(access_count, 0) + 1,
+		last_accessed_at = datetime('now')
 	WHERE id = ?
 `);
 const stmtDeleteMemory = db.prepare(`
@@ -205,11 +255,58 @@ const stmtUpdatePersonalityNotes = db.prepare(`
 	SET personality_notes = ?, updated_at = datetime('now')
 	WHERE user_id = ?
 `);
-const stmtGetUserMemories = db.prepare(`
-	SELECT id, user_id, guild_id, category, content, importance, created_at
+const stmtGetUserMemoriesAll = db.prepare(`
+	SELECT id, user_id, guild_id, channel_id, is_private, confidence, access_count, category, content, importance, created_at
 	FROM memories
 	WHERE user_id = ?
 	ORDER BY importance DESC, id DESC
+	LIMIT ?
+`);
+const stmtGetUserMemoriesPublic = db.prepare(`
+	SELECT id, user_id, guild_id, channel_id, is_private, confidence, access_count, category, content, importance, created_at
+	FROM memories
+	WHERE user_id = ?
+		AND (COALESCE(is_private, 0) = 0 OR (channel_id IS NOT NULL AND channel_id = ?))
+	ORDER BY importance DESC, id DESC
+	LIMIT ?
+`);
+const stmtGetEmbeddingCandidatesAll = db.prepare(`
+	SELECT m.id, m.user_id, m.guild_id, m.channel_id, m.is_private, m.confidence, m.access_count,
+		m.category, m.content, m.importance, m.created_at, m.embedding, u.username, u.display_name
+	FROM memories m
+	LEFT JOIN users u ON u.user_id = m.user_id
+	WHERE m.embedding IS NOT NULL
+	ORDER BY m.id DESC
+	LIMIT 300
+`);
+const stmtGetEmbeddingCandidatesScoped = db.prepare(`
+	SELECT m.id, m.user_id, m.guild_id, m.channel_id, m.is_private, m.confidence, m.access_count,
+		m.category, m.content, m.importance, m.created_at, m.embedding, u.username, u.display_name
+	FROM memories m
+	LEFT JOIN users u ON u.user_id = m.user_id
+	WHERE m.embedding IS NOT NULL
+		AND (m.user_id = ? OR m.guild_id = ? OR m.guild_id IS NULL)
+	ORDER BY m.id DESC
+	LIMIT 300
+`);
+const stmtAddChannelEpisode = db.prepare(`
+	INSERT INTO channel_episodes (guild_id, channel_id, summary, participants, message_count)
+	VALUES (?, ?, ?, ?, ?)
+`);
+const stmtPruneChannelEpisodes = db.prepare(`
+	DELETE FROM channel_episodes
+	WHERE id IN (
+		SELECT id FROM channel_episodes
+		WHERE channel_id = ?
+		ORDER BY id DESC
+		LIMIT -1 OFFSET 30
+	)
+`);
+const stmtGetRecentChannelEpisodes = db.prepare(`
+	SELECT id, guild_id, channel_id, summary, participants, message_count, created_at
+	FROM channel_episodes
+	WHERE channel_id = ?
+	ORDER BY id DESC
 	LIMIT ?
 `);
 const stmtGetServerMemories = db.prepare(`
@@ -330,6 +427,67 @@ function extractSignificantWords(str = '') {
 		.filter(w => w.length >= 3 && !STOPWORDS_ES.has(w));
 }
 
+function encodeEmbedding(values) {
+	if (!values || typeof values.length !== 'number' || values.length === 0) return null;
+	const floatArr = values instanceof Float32Array ? values : new Float32Array(values);
+	return Buffer.from(floatArr.buffer, floatArr.byteOffset, floatArr.byteLength);
+}
+
+function decodeEmbedding(blob) {
+	if (!blob) return null;
+	const bytes = new Uint8Array(blob);
+	if (bytes.byteLength === 0 || bytes.byteLength % 4 !== 0) return null;
+	return new Float32Array(bytes.buffer);
+}
+
+function cosineSimilarity(vecA, vecB) {
+	if (!vecA || !vecB || vecA.length !== vecB.length || vecA.length === 0) return 0;
+	let dot = 0;
+	let normA = 0;
+	let normB = 0;
+	for (let i = 0; i < vecA.length; i++) {
+		const a = vecA[i];
+		const b = vecB[i];
+		dot += a * b;
+		normA += a * a;
+		normB += b * b;
+	}
+	const denom = Math.sqrt(normA) * Math.sqrt(normB);
+	return denom === 0 ? 0 : dot / denom;
+}
+
+function computeRecencyScore(sqliteDateStr) {
+	if (!sqliteDateStr || typeof sqliteDateStr !== 'string') return 0.5;
+	const iso = sqliteDateStr.includes('T')
+		? sqliteDateStr
+		: `${sqliteDateStr.replace(' ', 'T')}Z`;
+	const ms = Date.parse(iso);
+	if (Number.isNaN(ms)) return 0.5;
+	const ageDays = Math.max(0, (Date.now() - ms) / 86_400_000);
+	return Math.exp(-0.015 * ageDays);
+}
+
+/**
+ * Guarda el vector embedding de un recuerdo existente
+ */
+function setMemoryEmbedding(memoryId, values) {
+	if (!memoryId) return false;
+	const encoded = encodeEmbedding(values);
+	if (!encoded) return false;
+	const res = stmtSetMemoryEmbedding.run(encoded, memoryId);
+	return res.changes > 0;
+}
+
+/**
+ * Incrementa el contador de acceso de los recuerdos consultados
+ */
+function touchMemories(memoryIds = []) {
+	if (!Array.isArray(memoryIds) || memoryIds.length === 0) return;
+	for (const id of memoryIds) {
+		if (id) stmtTouchMemory.run(id);
+	}
+}
+
 /**
  * Actualiza las notas de personalidad/perfil resumido de un usuario
  */
@@ -341,27 +499,31 @@ function updatePersonalityNotes(userId, notes) {
 /**
  * Guarda una nueva memoria o actualiza una existente si es muy similar (evita duplicados)
  */
-function addMemory(userId, guildId, category, content, importance = 2) {
+function addMemory(userId, guildId, category, content, importance = 2, options = {}) {
 	if (!content || typeof content !== 'string') return null;
 	const cleanContent = content.trim();
 	if (!cleanContent) return null;
 	const cleanCategory = (category || 'general').trim().toLowerCase();
 	const clampedImportance = Math.min(5, Math.max(1, Number(importance) || 2));
+	const {
+		channelId = null,
+		isPrivate = false,
+		confidence = 'medium',
+		embedding = null,
+	} = options || {};
+	const privateFlag = isPrivate ? 1 : 0;
+	const cleanConfidence = confidence || 'medium';
 
 	if (userId) {
-		const existingMemories = stmtGetUserMemories.all(userId, 50);
+		const existingMemories = stmtGetUserMemoriesAll.all(userId, 50);
 		const newNorm = normalizeText(cleanContent);
 		const newWords = extractSignificantWords(cleanContent);
 
 		for (const mem of existingMemories) {
 			const oldNorm = normalizeText(mem.content);
-			if (oldNorm === newNorm) {
-				const mergedImportance = Math.max(mem.importance, clampedImportance);
-				stmtUpdateMemory.run(cleanCategory, cleanContent, mergedImportance, mem.id);
-				return mem.id;
-			}
+			let isMatch = oldNorm === newNorm;
 
-			if (newWords.length >= 2) {
+			if (!isMatch && newWords.length >= 2) {
 				const oldWords = new Set(extractSignificantWords(mem.content));
 				if (oldWords.size >= 2) {
 					const overlap = newWords.filter(w => oldWords.has(w)).length;
@@ -369,22 +531,51 @@ function addMemory(userId, guildId, category, content, importance = 2) {
 					const similarity = overlap / minLen;
 					const threshold = mem.category === cleanCategory ? 0.65 : 0.8;
 					if (similarity >= threshold) {
-						const mergedImportance = Math.max(mem.importance, clampedImportance);
-						stmtUpdateMemory.run(cleanCategory, cleanContent, mergedImportance, mem.id);
-						return mem.id;
+						isMatch = true;
 					}
 				}
+			}
+
+			if (isMatch) {
+				const mergedImportance = Math.max(mem.importance, clampedImportance);
+				const mergedPrivate = (mem.is_private || privateFlag) ? 1 : 0;
+				stmtUpdateMemoryDedupe.run(
+					cleanCategory,
+					cleanContent,
+					mergedImportance,
+					mergedPrivate,
+					cleanConfidence,
+					mem.id,
+				);
+				if (embedding) {
+					setMemoryEmbedding(mem.id, embedding);
+				}
+				return mem.id;
 			}
 		}
 	}
 
-	const result = stmtAddMemory.run(userId || null, guildId || null, cleanCategory, cleanContent, clampedImportance);
+	const result = stmtAddMemory.run(
+		userId || null,
+		guildId || null,
+		cleanCategory,
+		cleanContent,
+		clampedImportance,
+		channelId || null,
+		privateFlag,
+		cleanConfidence,
+	);
+	const insertedId = Number(result.lastInsertRowid);
+
+	if (embedding && insertedId) {
+		setMemoryEmbedding(insertedId, embedding);
+	}
 
 	if (userId) {
 		stmtPruneUserMemories.run(userId, MAX_MEMORIES_PER_USER);
 	}
 
-	return Number(result.lastInsertRowid);
+	return insertedId;
 }
 
 /**
@@ -409,10 +600,14 @@ function deleteMemory(memoryId, userId = null) {
 }
 
 /**
- * Obtiene las memorias asociadas a un usuario específico
+ * Obtiene las memorias asociadas a un usuario específico respetando privacidad de canal/DM
  */
-function getUserMemories(userId, limit = 6) {
-	return stmtGetUserMemories.all(userId, limit);
+function getUserMemories(userId, limit = 6, options = {}) {
+	const { channelId = null, includePrivate = false } = options || {};
+	if (includePrivate) {
+		return stmtGetUserMemoriesAll.all(userId, limit);
+	}
+	return stmtGetUserMemoriesPublic.all(userId, channelId || '', limit);
 }
 
 /**
@@ -488,8 +683,8 @@ const stmtGetUserPendingReminders = db.prepare(`
 	LIMIT ?
 `);
 const stmtSearchMemories = db.prepare(`
-	SELECT m.id, m.user_id, m.guild_id, m.category, m.content, m.importance, m.created_at,
-		u.username, u.display_name
+	SELECT m.id, m.user_id, m.guild_id, m.channel_id, m.is_private, m.confidence, m.access_count,
+		m.category, m.content, m.importance, m.created_at, u.username, u.display_name
 	FROM memories_fts fts
 	JOIN memories m ON m.id = fts.rowid
 	LEFT JOIN users u ON u.user_id = m.user_id
@@ -497,14 +692,37 @@ const stmtSearchMemories = db.prepare(`
 	ORDER BY rank, m.importance DESC
 	LIMIT ?
 `);
+const stmtSearchMemoriesPublic = db.prepare(`
+	SELECT m.id, m.user_id, m.guild_id, m.channel_id, m.is_private, m.confidence, m.access_count,
+		m.category, m.content, m.importance, m.created_at, u.username, u.display_name
+	FROM memories_fts fts
+	JOIN memories m ON m.id = fts.rowid
+	LEFT JOIN users u ON u.user_id = m.user_id
+	WHERE memories_fts MATCH ?
+		AND (COALESCE(m.is_private, 0) = 0 OR (m.channel_id IS NOT NULL AND m.channel_id = ?))
+	ORDER BY rank, m.importance DESC
+	LIMIT ?
+`);
 const stmtSearchMemoriesScoped = db.prepare(`
-	SELECT m.id, m.user_id, m.guild_id, m.category, m.content, m.importance, m.created_at,
-		u.username, u.display_name
+	SELECT m.id, m.user_id, m.guild_id, m.channel_id, m.is_private, m.confidence, m.access_count,
+		m.category, m.content, m.importance, m.created_at, u.username, u.display_name
 	FROM memories_fts fts
 	JOIN memories m ON m.id = fts.rowid
 	LEFT JOIN users u ON u.user_id = m.user_id
 	WHERE memories_fts MATCH ?
 		AND (m.user_id = ? OR m.guild_id = ? OR m.guild_id IS NULL)
+	ORDER BY rank, m.importance DESC
+	LIMIT ?
+`);
+const stmtSearchMemoriesScopedPublic = db.prepare(`
+	SELECT m.id, m.user_id, m.guild_id, m.channel_id, m.is_private, m.confidence, m.access_count,
+		m.category, m.content, m.importance, m.created_at, u.username, u.display_name
+	FROM memories_fts fts
+	JOIN memories m ON m.id = fts.rowid
+	LEFT JOIN users u ON u.user_id = m.user_id
+	WHERE memories_fts MATCH ?
+		AND (m.user_id = ? OR m.guild_id = ? OR m.guild_id IS NULL)
+		AND (COALESCE(m.is_private, 0) = 0 OR (m.channel_id IS NOT NULL AND m.channel_id = ?))
 	ORDER BY rank, m.importance DESC
 	LIMIT ?
 `);
@@ -555,15 +773,115 @@ function searchMemories(query, limit = 5, options = {}) {
 		// Construir expresión FTS5 con OR para encontrar cualquier recuerdo que coincida con palabras clave de la frase
 		const uniqueTokens = [...new Set(rawTokens)].slice(0, 8);
 		const ftsQuery = uniqueTokens.map(t => `"${t}"*`).join(' OR ');
+		const includePrivate = Boolean(options.includePrivate);
+		const channelId = options.channelId || '';
 
 		if (options.userId || options.guildId) {
-			return stmtSearchMemoriesScoped.all(ftsQuery, options.userId || '', options.guildId || '', limit);
+			if (includePrivate) {
+				return stmtSearchMemoriesScoped.all(ftsQuery, options.userId || '', options.guildId || '', limit);
+			}
+			return stmtSearchMemoriesScopedPublic.all(ftsQuery, options.userId || '', options.guildId || '', channelId, limit);
 		}
-		return stmtSearchMemories.all(ftsQuery, limit);
+		if (includePrivate) {
+			return stmtSearchMemories.all(ftsQuery, limit);
+		}
+		return stmtSearchMemoriesPublic.all(ftsQuery, channelId, limit);
 	}
 	catch {
 		return [];
 	}
+}
+
+/**
+ * Búsqueda híbrida (FTS5 + similitud coseno con embeddings) combinada con RRF, importancia y frescura
+ */
+function searchMemoriesHybrid(query, queryEmbedding = null, limit = 5, options = {}) {
+	const ftsResults = searchMemories(query, limit * 3, options);
+	const includePrivate = Boolean(options.includePrivate);
+	const channelId = options.channelId || '';
+
+	const queryVec = queryEmbedding ? new Float32Array(queryEmbedding) : null;
+	let vecResults = [];
+
+	if (queryVec && queryVec.length > 0) {
+		const rawCandidates = (options.userId || options.guildId)
+			? stmtGetEmbeddingCandidatesScoped.all(options.userId || '', options.guildId || '')
+			: stmtGetEmbeddingCandidatesAll.all();
+
+		const scored = [];
+		for (const row of rawCandidates) {
+			if (!includePrivate && row.is_private && row.channel_id !== channelId) {
+				continue;
+			}
+			const vec = decodeEmbedding(row.embedding);
+			const sim = cosineSimilarity(queryVec, vec);
+			if (sim >= 0.42) {
+				const cleanRow = { ...row };
+				delete cleanRow.embedding;
+				scored.push({ row: cleanRow, sim });
+			}
+		}
+
+		scored.sort((a, b) => b.sim - a.sim);
+		vecResults = scored.slice(0, limit * 3).map(s => s.row);
+	}
+
+	const merged = new Map();
+	const addRanked = (list) => {
+		for (let i = 0; i < list.length; i++) {
+			const item = list[i];
+			const rrf = 1 / (60 + i + 1);
+			const existing = merged.get(item.id);
+			if (existing) {
+				existing.rrf += rrf;
+			}
+			else {
+				merged.set(item.id, { item, rrf });
+			}
+		}
+	};
+
+	addRanked(ftsResults);
+	addRanked(vecResults);
+
+	const ranked = Array.from(merged.values())
+		.map(({ item, rrf }) => {
+			const score = rrf + ((item.importance || 1) * 0.001) + (computeRecencyScore(item.created_at) * 0.004);
+			return { item, score };
+		})
+		.sort((a, b) => b.score - a.score)
+		.slice(0, limit)
+		.map(entry => entry.item);
+
+	if (ranked.length > 0) {
+		touchMemories(ranked.map(m => m.id));
+	}
+
+	return ranked;
+}
+
+/**
+ * Registra un episodio resumido de conversación de canal y mantiene máximo 30 por canal
+ */
+function addChannelEpisode(guildId, channelId, summary, participants = '', messageCount = 0) {
+	if (!channelId || !summary || typeof summary !== 'string') return null;
+	const res = stmtAddChannelEpisode.run(
+		guildId || null,
+		channelId,
+		summary.trim().slice(0, 260),
+		(participants || '').trim().slice(0, 200),
+		Number(messageCount) || 0,
+	);
+	stmtPruneChannelEpisodes.run(channelId);
+	return Number(res.lastInsertRowid);
+}
+
+/**
+ * Obtiene los episodios recientes del canal en orden cronológico
+ */
+function getRecentChannelEpisodes(channelId, limit = 3) {
+	if (!channelId) return [];
+	return stmtGetRecentChannelEpisodes.all(channelId, limit).reverse();
 }
 
 /**
@@ -661,6 +979,8 @@ module.exports = {
 	updateMemory,
 	deleteMemory,
 	deleteAllUserMemories,
+	setMemoryEmbedding,
+	touchMemories,
 	updatePersonalityNotes,
 	getUserMemories,
 	getServerMemories,
@@ -672,4 +992,10 @@ module.exports = {
 	markReminderCompleted,
 	getUserPendingReminders,
 	searchMemories,
+	searchMemoriesHybrid,
+	addChannelEpisode,
+	getRecentChannelEpisodes,
+	encodeEmbedding,
+	decodeEmbedding,
+	cosineSimilarity,
 };

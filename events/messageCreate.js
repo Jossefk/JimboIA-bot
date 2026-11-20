@@ -3,6 +3,7 @@ const db = require('../database/db.js');
 const {
 	generateJimboResponse,
 	extractBatchMemoriesInBackground,
+	summarizeChannelEpisodeInBackground,
 	splitDiscordMessage,
 } = require('../services/geminiService.js');
 const { buildGuildRoster, formatRosterForPrompt } = require('../utils/rosterUtils.js');
@@ -16,11 +17,22 @@ const REACTION_EMOJIS = ['💀', '🔥', '👀', '🃏', '🎰'];
 // Cooldown ligero por canal para evitar spam de respuestas espontáneas
 const channelCooldowns = new Map();
 
-// Buffer por canal para aprendizaje pasivo por lotes
+// Buffers por canal para aprendizaje pasivo y episodios resumidos
 const PASSIVE_BATCH_SIZE = 10;
+const EPISODE_BATCH_SIZE = 35;
 const passiveChannelBuffers = new Map();
+const episodeChannelBuffers = new Map();
 
-function enqueuePassiveMessage(message, displayName) {
+function isPrivateChannel(message) {
+	if (!message.guildId) return true;
+	const everyoneRole = message.guild?.roles?.everyone;
+	if (everyoneRole && typeof message.channel?.permissionsFor === 'function') {
+		return !message.channel.permissionsFor(everyoneRole)?.has('ViewChannel');
+	}
+	return false;
+}
+
+function enqueuePassiveMessage(message, displayName, isPrivate = false) {
 	const cleanText = formatReadableContent(message);
 	if (!cleanText || cleanText.length < 5 || cleanText.startsWith('/')) return;
 	if (/^(jaja+|jeje+|xd+|lol|ok|si|sí|no|epa|hola|buenas)$/i.test(cleanText)) return;
@@ -37,6 +49,8 @@ function enqueuePassiveMessage(message, displayName) {
 		passiveChannelBuffers.set(message.channelId, []);
 		extractBatchMemoriesInBackground({
 			guildId: message.guildId,
+			channelId: message.channelId,
+			isPrivate,
 			messages: buffer,
 		}).catch(err => {
 			console.error('[MEMORIA LOTE] Error en análisis pasivo:', err.message || err);
@@ -44,6 +58,31 @@ function enqueuePassiveMessage(message, displayName) {
 	}
 	else {
 		passiveChannelBuffers.set(message.channelId, buffer);
+	}
+}
+
+function enqueueEpisodeMessage(message, displayName) {
+	const cleanText = formatReadableContent(message);
+	if (!cleanText || cleanText.length < 3 || cleanText.startsWith('/')) return;
+
+	const buffer = episodeChannelBuffers.get(message.channelId) || [];
+	buffer.push({
+		author: displayName,
+		content: cleanText.slice(0, 220),
+	});
+
+	if (buffer.length >= EPISODE_BATCH_SIZE) {
+		episodeChannelBuffers.set(message.channelId, []);
+		summarizeChannelEpisodeInBackground({
+			guildId: message.guildId,
+			channelId: message.channelId,
+			messages: buffer,
+		}).catch(err => {
+			console.error('[EPISODIO] Error resumiendo bloque de canal:', err.message || err);
+		});
+	}
+	else {
+		episodeChannelBuffers.set(message.channelId, buffer);
 	}
 }
 
@@ -173,6 +212,9 @@ module.exports = {
 			return;
 		}
 
+		const isPrivate = isPrivateChannel(message);
+		enqueueEpisodeMessage(message, displayName);
+
 		// Determinar si Jimbo debe responder o intervenir
 		let shouldRespond = false;
 		let isSpontaneous = false;
@@ -195,7 +237,7 @@ module.exports = {
 
 		// Si no va a responder, acumular el mensaje para aprendizaje pasivo por lotes
 		if (!shouldRespond) {
-			enqueuePassiveMessage(message, displayName);
+			enqueuePassiveMessage(message, displayName, isPrivate);
 			if (mentionsBalatro || Math.random() < 0.03) {
 				try {
 					const randomEmoji = REACTION_EMOJIS[Math.floor(Math.random() * REACTION_EMOJIS.length)];
@@ -305,6 +347,7 @@ module.exports = {
 				attachments,
 				isSerious: false,
 				isSpontaneous,
+				isPrivate,
 			});
 
 			// Retardo breve y natural antes de enviar (0.7s a 1.8s)
