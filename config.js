@@ -9,8 +9,8 @@ module.exports = {
 	clientId: process.env.CLIENT_ID,
 	guildId: process.env.GUILD_ID,
 	geminiAPIKey,
-	geminiModel: process.env.GEMINI_MODEL || 'gemini-3.5-flash',
-	geminiMemoryModel: process.env.GEMINI_MEMORY_MODEL || 'gemini-3.5-flash-lite',
+	geminiModel: process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite',
+	geminiMemoryModel: process.env.GEMINI_MEMORY_MODEL || 'gemini-3.1-flash-lite',
 	chimeInRate: parseFloat(process.env.CHIME_IN_RATE || '0.03'),
 	ownerId: process.env.OWNER_ID || null,
 };
