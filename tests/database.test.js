@@ -3,11 +3,13 @@ const db = require('../database/db.js');
 
 describe('Database (SQLite) Tests', () => {
 	const testUserId = 'test_unit_user_999';
+	const numericTestId = '999000111222333444';
+	const testGuildId = 'guild_test_profile_1';
 
 	after(() => {
-		// Limpieza de datos de prueba
-		db.db.exec(`DELETE FROM users WHERE user_id = '${testUserId}';`);
-		db.db.exec(`DELETE FROM memories WHERE user_id = '${testUserId}';`);
+		// Limpieza de datos de prueba (memories antes que users por ON DELETE SET NULL)
+		db.db.exec(`DELETE FROM memories WHERE user_id IN ('${testUserId}', '${numericTestId}');`);
+		db.db.exec(`DELETE FROM users WHERE user_id IN ('${testUserId}', '${numericTestId}');`);
 	});
 
 	it('should create and retrieve a user with initial chips', () => {
@@ -44,10 +46,37 @@ describe('Database (SQLite) Tests', () => {
 	});
 
 	it('should add and retrieve user memories', () => {
-		db.addMemory(testUserId, 'guild_test', 'balatro', 'Ganó una mano de cuatro comodines', 3);
+		db.addMemory(testUserId, testGuildId, 'balatro', 'Ganó una mano de cuatro comodines', 3);
 		const memories = db.getUserMemories(testUserId, 5);
 		assert.strictEqual(memories.length, 1);
 		assert.strictEqual(memories[0].category, 'balatro');
 		assert.strictEqual(memories[0].content, 'Ganó una mano de cuatro comodines');
+	});
+
+	it('should update user profile, list known users, find by name/alias/mention, and delete all memories', () => {
+		db.getOrCreateUser(numericTestId, 'koontsdev', 'Koonts', testGuildId);
+		const updated = db.updateUserProfile(numericTestId, {
+			realName: 'Jossef',
+			aliases: 'Josse, El Creador',
+			personalityNotes: 'Creador de Jimbo y programador',
+		});
+
+		assert.strictEqual(updated.real_name, 'Jossef');
+		assert.strictEqual(updated.aliases, 'Josse, El Creador');
+		assert.strictEqual(updated.personality_notes, 'Creador de Jimbo y programador');
+
+		const known = db.getKnownUsers(testGuildId, 30);
+		assert.ok(known.some(u => u.user_id === numericTestId));
+
+		assert.strictEqual(db.findUserByName('Koonts', testGuildId)?.user_id, numericTestId);
+		assert.strictEqual(db.findUserByName('Jossef', testGuildId)?.user_id, numericTestId);
+		assert.strictEqual(db.findUserByName('El Creador', testGuildId)?.user_id, numericTestId);
+		assert.strictEqual(db.findUserByName(`<@${numericTestId}>`, testGuildId)?.user_id, numericTestId);
+
+		db.addMemory(numericTestId, testGuildId, 'general', 'Dato temporal de prueba', 2);
+		assert.strictEqual(db.getUserMemories(numericTestId, 5).length, 1);
+		const deletedCount = db.deleteAllUserMemories(numericTestId);
+		assert.strictEqual(deletedCount, 1);
+		assert.strictEqual(db.getUserMemories(numericTestId, 5).length, 0);
 	});
 });

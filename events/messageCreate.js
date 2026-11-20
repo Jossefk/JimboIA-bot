@@ -1,6 +1,11 @@
 const { Events } = require('discord.js');
 const db = require('../database/db.js');
-const { generateJimboResponse, splitDiscordMessage } = require('../services/geminiService.js');
+const {
+	generateJimboResponse,
+	extractBatchMemoriesInBackground,
+	splitDiscordMessage,
+} = require('../services/geminiService.js');
+const { buildGuildRoster, formatRosterForPrompt } = require('../utils/rosterUtils.js');
 const { chimeInRate: defaultChimeRate } = require('../config.js');
 
 // Palabras clave que llaman la atención de Jimbo
@@ -10,6 +15,37 @@ const REACTION_EMOJIS = ['💀', '🔥', '👀', '🃏', '🎰'];
 
 // Cooldown ligero por canal para evitar spam de respuestas espontáneas
 const channelCooldowns = new Map();
+
+// Buffer por canal para aprendizaje pasivo por lotes
+const PASSIVE_BATCH_SIZE = 10;
+const passiveChannelBuffers = new Map();
+
+function enqueuePassiveMessage(message, displayName) {
+	const cleanText = formatReadableContent(message);
+	if (!cleanText || cleanText.length < 5 || cleanText.startsWith('/')) return;
+	if (/^(jaja+|jeje+|xd+|lol|ok|si|sí|no|epa|hola|buenas)$/i.test(cleanText)) return;
+
+	const buffer = passiveChannelBuffers.get(message.channelId) || [];
+	buffer.push({
+		userId: message.author.id,
+		username: message.author.username,
+		displayName,
+		content: cleanText,
+	});
+
+	if (buffer.length >= PASSIVE_BATCH_SIZE) {
+		passiveChannelBuffers.set(message.channelId, []);
+		extractBatchMemoriesInBackground({
+			guildId: message.guildId,
+			messages: buffer,
+		}).catch(err => {
+			console.error('[MEMORIA LOTE] Error en análisis pasivo:', err.message || err);
+		});
+	}
+	else {
+		passiveChannelBuffers.set(message.channelId, buffer);
+	}
+}
 
 /**
  * Extrae adjuntos de imagen/audio tanto de message.attachments como de embeds de imagen
@@ -87,7 +123,7 @@ module.exports = {
 
 		// Registrar o actualizar al usuario en la base de datos SQLite
 		const displayName = message.member?.displayName || message.author.displayName || message.author.username;
-		const user = db.getOrCreateUser(message.author.id, message.author.username, displayName);
+		const user = db.getOrCreateUser(message.author.id, message.author.username, displayName, message.guildId);
 
 		// 1. Detectar si fue mencionado directamente
 		const isDirectMention = message.mentions.users.has(clientUser.id);
@@ -157,19 +193,20 @@ module.exports = {
 			isSpontaneous = true;
 		}
 
-		// A veces reacciona con emojis en vez de escribir
-		if (!shouldRespond && (mentionsBalatro || Math.random() < 0.03)) {
-			try {
-				const randomEmoji = REACTION_EMOJIS[Math.floor(Math.random() * REACTION_EMOJIS.length)];
-				await message.react(randomEmoji);
-			}
-			catch {
-				// Permiso de reacción faltante
+		// Si no va a responder, acumular el mensaje para aprendizaje pasivo por lotes
+		if (!shouldRespond) {
+			enqueuePassiveMessage(message, displayName);
+			if (mentionsBalatro || Math.random() < 0.03) {
+				try {
+					const randomEmoji = REACTION_EMOJIS[Math.floor(Math.random() * REACTION_EMOJIS.length)];
+					await message.react(randomEmoji);
+				}
+				catch {
+					// Permiso de reacción faltante
+				}
 			}
 			return;
 		}
-
-		if (!shouldRespond) return;
 
 		// Respetar cooldown por canal si la respuesta es espontánea
 		if (isSpontaneous) {
@@ -249,6 +286,10 @@ module.exports = {
 					: 'Mira esta imagen y dime qué opinas.';
 			}
 
+			// Construir directorio de miembros del servidor para el prompt
+			const { entries, hasPresence } = buildGuildRoster(message.guild, message.channel);
+			const guildRosterText = formatRosterForPrompt(entries, hasPresence);
+
 			// Generar respuesta con Gemini y el sistema de memoria SQLite
 			const responseText = await generateJimboResponse({
 				user,
@@ -256,6 +297,8 @@ module.exports = {
 				channelName: message.channel?.name || 'chat',
 				channelId: message.channelId,
 				guildId: message.guildId,
+				guild: message.guild,
+				guildRosterText,
 				contextMessages,
 				referencedMessage: referencedContext,
 				userMessage: cleanUserMessage,

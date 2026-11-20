@@ -21,7 +21,7 @@ module.exports = {
 		const member = interaction.guild ? await interaction.guild.members.fetch(targetUser.id).catch(() => null) : null;
 		const displayName = member?.displayName || targetUser.displayName || targetUser.username;
 
-		const userRecord = db.getOrCreateUser(targetUser.id, targetUser.username, displayName);
+		const userRecord = db.getOrCreateUser(targetUser.id, targetUser.username, displayName, interaction.guildId);
 		const memories = db.getUserMemories(targetUser.id, 6);
 
 		let affinityStatus = 'Neutral (aún se están conociendo)';
@@ -52,6 +52,13 @@ module.exports = {
 			{ name: '🎲 Historial Blackjack', value: `${userRecord.total_games_won}V / ${userRecord.total_games_played}P (Winrate: ${winRate})`, inline: true },
 		];
 
+		if (userRecord.real_name || userRecord.aliases) {
+			const identityParts = [];
+			if (userRecord.real_name) identityParts.push(`Nombre: **${userRecord.real_name}**`);
+			if (userRecord.aliases) identityParts.push(`Apodos: ${userRecord.aliases}`);
+			fields.push({ name: '🪪 Identidad', value: identityParts.join(' • ') });
+		}
+
 		if (userRecord.personality_notes && userRecord.personality_notes.trim()) {
 			fields.push({ name: '📝 Resumen de Perfil', value: userRecord.personality_notes.trim() });
 		}
@@ -64,7 +71,7 @@ module.exports = {
 			.setTitle('👤 Perfil y Memoria de Usuario')
 			.addFields(fields)
 			.setTimestamp()
-			.setFooter({ text: 'Memoria a largo plazo de Jimbo' });
+			.setFooter({ text: 'Usa /memoria ver para consultar todos los recuerdos con ID.' });
 
 		await interaction.reply({ embeds: [embed] });
 	},

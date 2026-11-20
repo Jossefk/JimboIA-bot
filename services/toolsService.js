@@ -68,17 +68,21 @@ const searchMemoryDeclaration = {
 
 const saveMemoryDeclaration = {
 	name: 'save_memory',
-	description: 'Guarda o actualiza un hecho importante, gusto, trabajo o dato personal en la memoria a largo plazo cuando el usuario pida que recuerdes algo.',
+	description: 'Guarda o actualiza un hecho importante, gusto, trabajo o dato personal en la memoria a largo plazo cuando el usuario pida que recuerdes algo sobre sí mismo o sobre otra persona del servidor.',
 	parameters: {
 		type: Type.OBJECT,
 		properties: {
+			target_name: {
+				type: Type.STRING,
+				description: 'Opcional: nombre, nick o mención de la persona del servidor sobre quien guardar el recuerdo. Si se omite, se guarda para el usuario actual.',
+			},
 			category: {
 				type: Type.STRING,
 				description: 'Categoría del recuerdo: "gusto", "trabajo", "anecdota", "vida", "anime", "juego" o "general".',
 			},
 			content: {
 				type: Type.STRING,
-				description: 'El dato o hecho conciso a recordar sobre el usuario (en tercera persona, ej: "Su cumpleaños es el 14 de mayo").',
+				description: 'El dato o hecho conciso a recordar sobre la persona (en tercera persona, ej: "Su cumpleaños es el 14 de mayo").',
 			},
 			importance: {
 				type: Type.NUMBER,
@@ -89,11 +93,54 @@ const saveMemoryDeclaration = {
 	},
 };
 
+const getPersonProfileDeclaration = {
+	name: 'get_person_profile',
+	description: 'Consulta la ficha completa y los recuerdos guardados de una persona específica del servidor por su nick, nombre real, apodo o mención.',
+	parameters: {
+		type: Type.OBJECT,
+		properties: {
+			query: {
+				type: Type.STRING,
+				description: 'Nombre, apodo, username o mención de la persona a consultar.',
+			},
+		},
+		required: ['query'],
+	},
+};
+
+const updatePersonProfileDeclaration = {
+	name: 'update_person_profile',
+	description: 'Actualiza los datos de identidad de la ficha de una persona (nombre real, apodos o resumen de perfil).',
+	parameters: {
+		type: Type.OBJECT,
+		properties: {
+			target_name: {
+				type: Type.STRING,
+				description: 'Opcional: nick, nombre o mención de la persona a actualizar. Si se omite, actualiza al usuario que está hablando.',
+			},
+			real_name: {
+				type: Type.STRING,
+				description: 'Nombre real de la persona (ej: "Jossef", "Carlos").',
+			},
+			aliases: {
+				type: Type.STRING,
+				description: 'Apodos separados por coma (ej: "Koonts, Josse").',
+			},
+			personality_notes: {
+				type: Type.STRING,
+				description: 'Resumen breve del perfil/vibra de la persona (ej: "Creador del bot, dev backend, fan de One Piece").',
+			},
+		},
+	},
+};
+
 const jimboFunctionDeclarations = [
 	setReminderDeclaration,
 	getDolarRateDeclaration,
 	searchMemoryDeclaration,
 	saveMemoryDeclaration,
+	getPersonProfileDeclaration,
+	updatePersonProfileDeclaration,
 ];
 
 // 2. Ejecutores de herramientas
@@ -123,9 +170,32 @@ async function fetchDolarRates() {
 }
 
 /**
+ * Busca una persona en SQLite o en la caché de miembros del servidor
+ */
+function resolvePersonByQuery(query, guildId, guild = null) {
+	if (!query || typeof query !== 'string') return null;
+	const found = db.findUserByName(query, guildId);
+	if (found) return found;
+
+	if (guild && guild.members?.cache) {
+		const norm = query.trim().replace(/^@+/, '').toLowerCase();
+		for (const member of guild.members.cache.values()) {
+			if (member.user?.bot) continue;
+			const disp = (member.displayName || '').toLowerCase();
+			const uname = (member.user?.username || '').toLowerCase();
+			if (disp === norm || uname === norm || disp.includes(norm) || uname.includes(norm)) {
+				return db.getOrCreateUser(member.id, member.user.username, member.displayName, guildId);
+			}
+		}
+	}
+
+	return null;
+}
+
+/**
  * Ejecuta una llamada a herramienta retornada por Gemini
  */
-async function executeToolCall({ name, args }, { userId, channelId, guildId }) {
+async function executeToolCall({ name, args }, { userId, channelId, guildId, guild = null }) {
 	if (name === 'set_reminder') {
 		const text = args.reminder_text;
 		let triggerIso;
@@ -194,8 +264,18 @@ async function executeToolCall({ name, args }, { userId, channelId, guildId }) {
 	}
 
 	if (name === 'save_memory') {
+		let targetUserId = userId;
+		let targetLabel = null;
+		if (args.target_name) {
+			const matched = resolvePersonByQuery(args.target_name, guildId, guild);
+			if (matched) {
+				targetUserId = matched.user_id;
+				targetLabel = matched.display_name || matched.username;
+			}
+		}
+
 		const memoryId = db.addMemory(
-			userId,
+			targetUserId,
 			guildId,
 			args.category || 'general',
 			args.content,
@@ -204,8 +284,75 @@ async function executeToolCall({ name, args }, { userId, channelId, guildId }) {
 		return {
 			status: 'success',
 			memory_id: memoryId,
+			target_user: targetLabel || 'usuario actual',
 			category: args.category || 'general',
 			content: args.content,
+		};
+	}
+
+	if (name === 'get_person_profile') {
+		const person = resolvePersonByQuery(args.query, guildId, guild);
+		if (!person) {
+			return {
+				found: false,
+				message: `No encontré ninguna ficha guardada para "${args.query}".`,
+			};
+		}
+
+		const memories = db.getUserMemories(person.user_id, 10);
+		return {
+			found: true,
+			user_id: person.user_id,
+			username: person.username,
+			display_name: person.display_name,
+			real_name: person.real_name || '',
+			aliases: person.aliases || '',
+			personality_notes: person.personality_notes || '',
+			affinity: person.affinity,
+			memories: memories.map(m => ({
+				id: m.id,
+				categoria: m.category,
+				recuerdo: m.content,
+				importancia: m.importance,
+			})),
+		};
+	}
+
+	if (name === 'update_person_profile') {
+		let targetUserId = userId;
+		if (args.target_name) {
+			const matched = resolvePersonByQuery(args.target_name, guildId, guild);
+			if (!matched) {
+				return {
+					status: 'error',
+					message: `No encontré a "${args.target_name}" en el servidor para actualizar su ficha.`,
+				};
+			}
+			targetUserId = matched.user_id;
+		}
+
+		const updated = db.updateUserProfile(targetUserId, {
+			realName: args.real_name,
+			aliases: args.aliases,
+			personalityNotes: args.personality_notes,
+		});
+
+		if (!updated) {
+			return {
+				status: 'error',
+				message: 'No se pudo actualizar la ficha porque el usuario no está registrado.',
+			};
+		}
+
+		return {
+			status: 'success',
+			profile: {
+				user_id: updated.user_id,
+				display_name: updated.display_name,
+				real_name: updated.real_name || '',
+				aliases: updated.aliases || '',
+				personality_notes: updated.personality_notes || '',
+			},
 		};
 	}
 

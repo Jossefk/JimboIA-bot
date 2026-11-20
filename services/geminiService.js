@@ -164,6 +164,12 @@ function buildMemoryContext(user, userMessage, guildId) {
 	}
 
 	const lines = [];
+	if (user.real_name && user.real_name.trim()) {
+		lines.push(`- Nombre real de este usuario: ${user.real_name.trim()}`);
+	}
+	if (user.aliases && user.aliases.trim()) {
+		lines.push(`- Apodos de este usuario: ${user.aliases.trim()}`);
+	}
 	if (user.personality_notes && user.personality_notes.trim()) {
 		lines.push(`- Perfil / vibra de este usuario: ${user.personality_notes.trim()}`);
 	}
@@ -197,6 +203,8 @@ async function generateJimboResponse({
 	channelName,
 	channelId,
 	guildId,
+	guild = null,
+	guildRosterText = '',
 	contextMessages = [],
 	referencedMessage = null,
 	userMessage,
@@ -209,6 +217,9 @@ async function generateJimboResponse({
 	}
 
 	const memoriesBlock = buildMemoryContext(user, userMessage, guildId);
+	const rosterSection = guildRosterText && guildRosterText.trim()
+		? `\n[Personas del servidor]:\n${guildRosterText.trim()}\n`
+		: '';
 
 	// Formatear contexto reciente del chat
 	const formattedContext = contextMessages
@@ -235,11 +246,11 @@ Contexto:
 - Usuario: ${userName} (@${user.username})
 - Servidor: "${guildName || 'Discord'}", canal: "#${channelName || 'general'}"
 - Fecha y hora UTC actual: ${nowIso}
-${memoriesBlock}
-
+${memoriesBlock}${rosterSection}
 Reglas:
 1. Ve directo al grano y responde exactamente lo que te preguntan o analiza la imagen/audio adjunto con precisión.
-2. Mantén la respuesta concisa y bien estructurada.`
+2. Mantén la respuesta concisa y bien estructurada.
+3. Si preguntan por miembros del servidor o personas conectadas, usa la lista [Personas del servidor] o la herramienta get_person_profile.`
 		: `Eres Jimbo, un pana venezolano más en este servidor de Discord: gamer, otaku, sarcástico y callejero.
 Sabes de videojuegos, anime, tecnología, programación, memes y cultura general. Tienes humor negro, te gusta el chalequeo criollo inteligente y hablas sin filtros ni sermones moralistas.
 
@@ -248,15 +259,15 @@ Contexto social:
 - Afinidad contigo (-100 a +100): ${user.affinity} (${toneGuidance})
 - Servidor: "${guildName || 'Discord'}", canal: "#${channelName || 'general'}"
 - Fecha y hora UTC actual: ${nowIso}
-${memoriesBlock}
-
+${memoriesBlock}${rosterSection}
 REGLAS ESTRICTAS DE ESTILO Y BREVEDAD (OBLIGATORIO):
 1. MENSAJES CORTOS: Escribe como una persona real en un chat de Discord. Responde en 1 a 2 oraciones cortas (máximo 25 a 45 palabras, un solo párrafo breve).${isSpontaneous ? ' Como estás metiendo la cuchara espontáneamente en la conversación, responde en UNA sola línea corta y rápida (máximo 15-20 palabras).' : ''} Solo extiéndete si te piden explícitamente una explicación larga, código o un resumen.
 2. CERO SPAM DE BALATRO: Aunque tu avatar viene de Balatro, NO eres monotemático. PROHIBIDO meter referencias a cartas, comodines, apuestas, fichas, casino o decir "balatrear" en conversaciones normales. Solo habla de Balatro o fichas si el usuario saca ese tema explícitamente.
 3. JERGA NATURAL: Usa jerga venezolana de forma fluida y sin exagerar ("pana", "chamo", "fino", "epa", "qué lo que", "beta", "ladilla", "naguevona", "marico" si hay confianza). No metas cinco modismos forzados en una sola oración.
-4. MEMORIA ORGÁNICA: Si tienes recuerdos del usuario, úsalos solo cuando vengan al caso de forma natural, nunca los recites como lista. Si el usuario te pide recordar algo, usa la herramienta save_memory.
-5. IMÁGENES Y AUDIOS: Si hay una imagen/foto adjunta, mira bien qué aparece (incluyendo cualquier texto escrito en la imagen, meme o captura) y comenta directamente lo que ves. Si es un audio o nota de voz, responde directo a lo que dijeron.
-6. CERO TONO DE BOT: Nunca digas "¡Hola! ¿En qué puedo ayudarte?", "Como IA", ni uses emojis de cartas (🃏, 🎰). Usa a lo sumo 1 emoji casual (💀, 🔥, 👀, 😭) o ninguno.`;
+4. IDENTIDAD Y DIRECTORIO DEL GRUPO: Si te preguntan quiénes están en el chat/servidor o por algún miembro, usa la lista [Personas del servidor] (respetando quién está en línea o desconectado si aparece) o llama a get_person_profile para ver sus recuerdos completos.
+5. MEMORIA ORGÁNICA: Si tienes recuerdos del usuario, úsalos solo cuando vengan al caso de forma natural, nunca los recites como lista. Si alguien dice su nombre real, apodo o pide recordar algo sobre sí mismo u otro pana, usa update_person_profile o save_memory.
+6. IMÁGENES Y AUDIOS: Si hay una imagen/foto adjunta, mira bien qué aparece (incluyendo cualquier texto escrito en la imagen, meme o captura) y comenta directamente lo que ves. Si es un audio o nota de voz, responde directo a lo que dijeron.
+7. CERO TONO DE BOT: Nunca digas "¡Hola! ¿En qué puedo ayudarte?", "Como IA", ni uses emojis de cartas (🃏, 🎰). Usa a lo sumo 1 emoji casual (💀, 🔥, 👀, 😭) o ninguno.`;
 
 	let promptText = '';
 	if (formattedContext.trim()) {
@@ -299,6 +310,7 @@ REGLAS ESTRICTAS DE ESTILO Y BREVEDAD (OBLIGATORIO):
 					userId: user.user_id,
 					channelId: channelId || null,
 					guildId: guildId || null,
+					guild,
 				});
 
 				functionResponseParts.push({
@@ -388,20 +400,22 @@ ${recentChatSnippet || '(Sin contexto previo)'}
 Mensaje del usuario:
 "${cleanMsg}"
 
-Perfil actual del usuario (personality_notes):
-"${user.personality_notes || ''}"
+Ficha actual del usuario:
+- Nombre real: "${user.real_name || ''}"
+- Apodos: "${user.aliases || ''}"
+- Perfil (personality_notes): "${user.personality_notes || ''}"
 
 Recuerdos ya guardados de este usuario:
 ${existingListText}
 
 Instrucciones:
-1. Determina si el usuario reveló un dato personal duradero (gustos, juegos, anime, trabajo, estudios, país/ciudad, proyectos, pareja/familia, anécdotas o preferencias) o si corrigió/actualizó un recuerdo existente.
+1. Determina si el usuario reveló un dato personal duradero (nombre real, apodos, gustos, juegos, anime, trabajo, estudios, país/ciudad, proyectos, pareja/familia, anécdotas o preferencias) o si corrigió/actualizó un recuerdo existente.
 2. NO guardes saludos, preguntas genéricas, chistes de un segundo ni duplicados de lo que ya está en "Recuerdos ya guardados".
 3. Si el dato actualiza o corrige un recuerdo existente de la lista, usa "action": "update" e indica su "target_memory_id".
 4. Si el usuario pide olvidar algo que está en la lista o dice que ya no es cierto, usa "action": "delete" y su "target_memory_id".
 5. Si es un hecho nuevo que vale la pena recordar, usa "action": "add".
 6. Si no hay nada memorable nuevo, usa "action": "none".
-7. Opcionalmente, si aprendiste algo que define bien su perfil general, actualiza "personality_notes" en una frase corta (máx 120 caracteres, ej: "Dev backend, fan de One Piece y jugador de Valorant"). Si no requiere cambio, pon null.
+7. Si reveló o corrigió su nombre real, apodos o rasgos generales de su perfil, devuélvelos en "real_name", "aliases" o "personality_notes" (máx 120 caracteres). Si no requieren cambio, pon null.
 
 Responde ÚNICAMENTE con un JSON válido:
 {
@@ -410,6 +424,8 @@ Responde ÚNICAMENTE con un JSON válido:
   "category": "gusto" | "trabajo" | "anecdota" | "vida" | "anime" | "juego" | "general",
   "content": "hecho conciso en 3ra persona (ej: 'Estudia ingeniería y trabaja remoto') o null",
   "importance": numero del 1 al 5 (3 = normal, 4 = importante, 5 = dato clave como cumpleaños/profesión),
+  "real_name": "nombre real si lo mencionó o null",
+  "aliases": "apodos separados por coma o null",
   "personality_notes": "string corto actualizado o null",
   "affinity_delta": numero entero entre -3 y +3 (positivo si fue buena onda/gracioso, negativo si fue hostil, 0 si normal)
 }`;
@@ -457,16 +473,139 @@ Responde ÚNICAMENTE con un JSON válido:
 			console.log(`[MEMORIA -] ${user.username} | ID ${parsed.target_memory_id} eliminado`);
 		}
 
-		if (parsed.personality_notes && typeof parsed.personality_notes === 'string') {
-			const newNotes = parsed.personality_notes.trim();
-			if (newNotes && newNotes !== (user.personality_notes || '').trim()) {
-				db.updatePersonalityNotes(user.user_id, newNotes);
+		const profileUpdates = {};
+		if (parsed.real_name && typeof parsed.real_name === 'string') {
+			const val = parsed.real_name.trim();
+			if (val && val !== (user.real_name || '').trim()) {
+				profileUpdates.realName = val;
 			}
+		}
+		if (parsed.aliases && typeof parsed.aliases === 'string') {
+			const val = parsed.aliases.trim();
+			if (val && val !== (user.aliases || '').trim()) {
+				profileUpdates.aliases = val;
+			}
+		}
+		if (parsed.personality_notes && typeof parsed.personality_notes === 'string') {
+			const val = parsed.personality_notes.trim();
+			if (val && val !== (user.personality_notes || '').trim()) {
+				profileUpdates.personalityNotes = val;
+			}
+		}
+		if (Object.keys(profileUpdates).length > 0) {
+			db.updateUserProfile(user.user_id, profileUpdates);
 		}
 
 		if (parsed.affinity_delta && Number(parsed.affinity_delta) !== 0) {
 			const delta = Math.max(-5, Math.min(5, Number(parsed.affinity_delta)));
 			db.adjustAffinity(user.user_id, delta);
+		}
+	}
+	catch {
+		// Fallo silencioso en background sin interrumpir el chat
+	}
+}
+
+/**
+ * Analiza un lote de mensajes casuales en segundo plano para extraer datos personales sin responder al chat
+ */
+async function extractBatchMemoriesInBackground({ guildId, messages = [] }) {
+	if (!getGeminiClient() || !Array.isArray(messages) || messages.length === 0) return;
+
+	const batchMessages = messages.slice(0, 10);
+	const validUserIds = new Set(batchMessages.map(m => m.userId).filter(Boolean));
+	if (validUserIds.size === 0) return;
+
+	try {
+		const profilesSummary = [];
+		for (const uid of validUserIds) {
+			const sample = batchMessages.find(m => m.userId === uid);
+			const dbUser = db.getOrCreateUser(uid, sample?.username || uid, sample?.displayName || sample?.username || uid, guildId);
+			const recentMems = db.getUserMemories(uid, 4).map(m => `[${m.category}] ${m.content}`).join('; ');
+			profilesSummary.push(
+				`- user_id="${uid}" (${dbUser.display_name || dbUser.username}, real_name="${dbUser.real_name || ''}", aliases="${dbUser.aliases || ''}", notes="${dbUser.personality_notes || ''}")`
+				+ (recentMems ? ` | Recuerdos: ${recentMems}` : ''),
+			);
+		}
+
+		const chatLog = batchMessages
+			.map(m => `[${m.userId}] ${m.displayName || m.username}: ${m.content}`)
+			.join('\n');
+
+		const batchPrompt = `Eres el sistema de memoria pasiva de Jimbo en un chat grupal de Discord.
+Analiza este bloque de mensajes recientes entre usuarios (Jimbo no participó).
+
+Perfiles actuales de los participantes:
+${profilesSummary.join('\n')}
+
+Mensajes del bloque (en orden cronológico):
+${chatLog}
+
+Instrucciones:
+1. Extrae ÚNICAMENTE hechos duraderos y útiles que algún participante haya revelado (nombre real, apodos, trabajo, estudios, país/ciudad, proyectos, gustos claros, juegos o anime favoritos, anécdotas relevantes).
+2. Ignora charla trivial, saludos, risas, bromas pasajeras o datos que ya figuren en sus perfiles/recuerdos.
+3. Usa exactamente el "user_id" que aparece entre corchetes antes del nombre.
+4. Si nadie reveló nada nuevo que valga la pena recordar, devuelve {"updates": []}.
+
+Responde ÚNICAMENTE con un JSON válido:
+{
+  "updates": [
+    {
+      "user_id": "id exacto del usuario",
+      "category": "gusto" | "trabajo" | "anecdota" | "vida" | "anime" | "juego" | "general",
+      "content": "hecho conciso en 3ra persona o null",
+      "importance": numero del 1 al 5,
+      "real_name": "nombre real si lo reveló o null",
+      "aliases": "apodos separados por coma o null",
+      "personality_notes": "resumen corto actualizado o null"
+    }
+  ]
+}`;
+
+		const res = await callGemini(client =>
+			client.models.generateContent({
+				model: geminiMemoryModel,
+				contents: [{ role: 'user', parts: [{ text: batchPrompt }] }],
+				config: {
+					responseMimeType: 'application/json',
+					temperature: 0.1,
+					safetySettings: zeroSafetySettings,
+				},
+			}),
+		);
+
+		if (!res.text) return;
+
+		const parsed = JSON.parse(res.text.trim());
+		const updates = Array.isArray(parsed?.updates) ? parsed.updates : [];
+
+		for (const item of updates) {
+			if (!item || !validUserIds.has(item.user_id)) continue;
+
+			const profileUpdates = {};
+			if (item.real_name && typeof item.real_name === 'string') {
+				profileUpdates.realName = item.real_name.trim();
+			}
+			if (item.aliases && typeof item.aliases === 'string') {
+				profileUpdates.aliases = item.aliases.trim();
+			}
+			if (item.personality_notes && typeof item.personality_notes === 'string') {
+				profileUpdates.personalityNotes = item.personality_notes.trim();
+			}
+			if (Object.keys(profileUpdates).length > 0) {
+				db.updateUserProfile(item.user_id, profileUpdates);
+			}
+
+			if (item.content && typeof item.content === 'string' && item.content.trim()) {
+				db.addMemory(
+					item.user_id,
+					guildId || null,
+					item.category || 'general',
+					item.content.trim(),
+					item.importance || 3,
+				);
+				console.log(`[MEMORIA LOTE] ${item.user_id} | [${item.category || 'general'}]: ${item.content.trim()}`);
+			}
 		}
 	}
 	catch {
@@ -506,6 +645,7 @@ ${chatHistory}
 
 module.exports = {
 	generateJimboResponse,
+	extractBatchMemoriesInBackground,
 	generateChatSummary,
 	splitDiscordMessage,
 	buildMediaParts,

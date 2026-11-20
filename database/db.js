@@ -98,16 +98,69 @@ catch {
 	// Ignorar si ya está sincronizado
 }
 
+// Migración idempotente de columnas de perfil en users
+const userColumns = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
+if (!userColumns.includes('real_name')) {
+	db.exec('ALTER TABLE users ADD COLUMN real_name TEXT DEFAULT \'\';');
+}
+if (!userColumns.includes('aliases')) {
+	db.exec('ALTER TABLE users ADD COLUMN aliases TEXT DEFAULT \'\';');
+}
+if (!userColumns.includes('last_guild_id')) {
+	db.exec('ALTER TABLE users ADD COLUMN last_guild_id TEXT DEFAULT NULL;');
+}
+if (!userColumns.includes('last_seen_at')) {
+	db.exec('ALTER TABLE users ADD COLUMN last_seen_at TEXT DEFAULT NULL;');
+}
+
 // Prepared statements reutilizables
 const stmtGetUser = db.prepare('SELECT * FROM users WHERE user_id = ?');
 const stmtInsertUser = db.prepare(`
-	INSERT INTO users (user_id, username, display_name, chips, affinity)
-	VALUES (?, ?, ?, 1000, 0)
+	INSERT INTO users (user_id, username, display_name, chips, affinity, last_guild_id, last_seen_at)
+	VALUES (?, ?, ?, 1000, 0, ?, datetime('now'))
 `);
 const stmtUpdateUserInfo = db.prepare(`
 	UPDATE users
-	SET username = ?, display_name = ?, updated_at = datetime('now')
+	SET username = ?,
+		display_name = ?,
+		last_guild_id = COALESCE(?, last_guild_id),
+		last_seen_at = datetime('now'),
+		updated_at = datetime('now')
 	WHERE user_id = ?
+`);
+const stmtTouchUser = db.prepare(`
+	UPDATE users
+	SET last_guild_id = COALESCE(?, last_guild_id),
+		last_seen_at = datetime('now')
+	WHERE user_id = ?
+`);
+const stmtUpdateUserProfile = db.prepare(`
+	UPDATE users
+	SET real_name = ?,
+		aliases = ?,
+		personality_notes = ?,
+		updated_at = datetime('now')
+	WHERE user_id = ?
+`);
+const stmtDeleteAllUserMemories = db.prepare(`
+	DELETE FROM memories WHERE user_id = ?
+`);
+const stmtGetKnownUsersAll = db.prepare(`
+	SELECT u.*, COALESCE(mc.cnt, 0) AS memory_count
+	FROM users u
+	LEFT JOIN (SELECT user_id, COUNT(*) AS cnt FROM memories GROUP BY user_id) mc
+		ON mc.user_id = u.user_id
+	ORDER BY COALESCE(u.last_seen_at, u.updated_at) DESC, u.updated_at DESC
+	LIMIT ?
+`);
+const stmtGetKnownUsersByGuild = db.prepare(`
+	SELECT u.*, COALESCE(mc.cnt, 0) AS memory_count
+	FROM users u
+	LEFT JOIN (SELECT user_id, COUNT(*) AS cnt FROM memories GROUP BY user_id) mc
+		ON mc.user_id = u.user_id
+	WHERE u.last_guild_id = ? OR u.last_guild_id IS NULL
+	ORDER BY COALESCE(u.last_seen_at, u.updated_at) DESC, u.updated_at DESC
+	LIMIT ?
 `);
 const stmtAddChips = db.prepare(`
 	UPDATE users
@@ -196,16 +249,19 @@ const stmtUpsertServerSettings = db.prepare(`
 /**
  * Obtiene o crea un usuario en la base de datos
  */
-function getOrCreateUser(userId, username, displayName) {
+function getOrCreateUser(userId, username, displayName, guildId = null) {
+	const effectiveDisplay = displayName || username;
 	let user = stmtGetUser.get(userId);
 	if (!user) {
-		stmtInsertUser.run(userId, username, displayName || username);
+		stmtInsertUser.run(userId, username, effectiveDisplay, guildId || null);
 		user = stmtGetUser.get(userId);
 	}
-	else if (user.username !== username || user.display_name !== displayName) {
-		stmtUpdateUserInfo.run(username, displayName || username, userId);
-		user.username = username;
-		user.display_name = displayName;
+	else if (user.username !== username || user.display_name !== effectiveDisplay || (guildId && user.last_guild_id !== guildId)) {
+		stmtUpdateUserInfo.run(username, effectiveDisplay, guildId || null, userId);
+		user = stmtGetUser.get(userId);
+	}
+	else {
+		stmtTouchUser.run(guildId || null, userId);
 	}
 	return user;
 }
@@ -510,9 +566,93 @@ function searchMemories(query, limit = 5, options = {}) {
 	}
 }
 
+/**
+ * Actualiza los campos de perfil de un usuario (nombre real, apodos, notas)
+ */
+function updateUserProfile(userId, { realName, aliases, personalityNotes } = {}) {
+	if (!userId) return null;
+	const current = stmtGetUser.get(userId);
+	if (!current) return null;
+
+	const nextRealName = (realName !== undefined && realName !== null)
+		? String(realName).trim().slice(0, 80)
+		: (current.real_name || '');
+	const nextAliases = (aliases !== undefined && aliases !== null)
+		? String(aliases).trim().slice(0, 150)
+		: (current.aliases || '');
+	const nextNotes = (personalityNotes !== undefined && personalityNotes !== null)
+		? String(personalityNotes).trim().slice(0, 250)
+		: (current.personality_notes || '');
+
+	stmtUpdateUserProfile.run(nextRealName, nextAliases, nextNotes, userId);
+	return stmtGetUser.get(userId);
+}
+
+/**
+ * Obtiene la lista de usuarios conocidos en el servidor (o globalmente) con conteo de recuerdos
+ */
+function getKnownUsers(guildId = null, limit = 30) {
+	if (guildId) {
+		return stmtGetKnownUsersByGuild.all(guildId, limit);
+	}
+	return stmtGetKnownUsersAll.all(limit);
+}
+
+/**
+ * Busca un usuario por mención, ID, nick, nombre real o apodos
+ */
+function findUserByName(query, guildId = null) {
+	if (!query || typeof query !== 'string') return null;
+	const trimmed = query.trim();
+	if (!trimmed) return null;
+
+	const mentionMatch = trimmed.match(/^<@!?(\d+)>$/) || trimmed.match(/^(\d{15,25})$/);
+	if (mentionMatch) {
+		return stmtGetUser.get(mentionMatch[1]) || null;
+	}
+
+	const normQuery = normalizeText(trimmed.replace(/^@+/, ''));
+	if (!normQuery) return null;
+
+	const users = getKnownUsers(guildId, 100);
+	let partialMatch = null;
+
+	for (const u of users) {
+		const candidates = [
+			u.display_name,
+			u.username,
+			u.real_name,
+			...(u.aliases ? u.aliases.split(',') : []),
+		]
+			.map(v => normalizeText(v || ''))
+			.filter(Boolean);
+
+		if (candidates.some(c => c === normQuery)) {
+			return u;
+		}
+		if (!partialMatch && candidates.some(c => c.includes(normQuery) || normQuery.includes(c))) {
+			partialMatch = u;
+		}
+	}
+
+	return partialMatch;
+}
+
+/**
+ * Elimina todos los recuerdos de un usuario y retorna el total eliminado
+ */
+function deleteAllUserMemories(userId) {
+	if (!userId) return 0;
+	const res = stmtDeleteAllUserMemories.run(userId);
+	return Number(res.changes);
+}
+
 module.exports = {
 	db,
 	getOrCreateUser,
+	updateUserProfile,
+	getKnownUsers,
+	findUserByName,
 	addChips,
 	setChips,
 	adjustAffinity,
@@ -520,6 +660,7 @@ module.exports = {
 	addMemory,
 	updateMemory,
 	deleteMemory,
+	deleteAllUserMemories,
 	updatePersonalityNotes,
 	getUserMemories,
 	getServerMemories,
